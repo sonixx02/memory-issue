@@ -187,17 +187,26 @@ export default function AppShell() {
 
   return (
     <div style={{
-      height: '100dvh', width: '100vw', display: 'flex', flexDirection: 'column',
+      ...(isMobile
+        ? { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0 }
+        : { height: '100dvh', width: '100vw' }),
+      display: 'flex', flexDirection: 'column',
       backgroundColor: tv('--bg-primary'), color: tv('--text-primary'),
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
       overflow: 'hidden',
     }}>
       {/* ── Compact top strip ── */}
       <header style={{
-        height: isMobile ? '48px' : '40px', backgroundColor: tv('--bg-secondary'),
+        minHeight: isMobile ? '48px' : '40px',
+        backgroundColor: tv('--bg-secondary'),
         borderBottom: `1px solid ${tv('--border')}`,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: isMobile ? '0 12px' : '0 10px', flexShrink: 0, zIndex: 10,
+        paddingTop: isMobile ? 'env(safe-area-inset-top, 0px)' : '0',
+        paddingBottom: '0',
+        paddingLeft: isMobile ? '12px' : '10px',
+        paddingRight: isMobile ? '12px' : '10px',
+        flexShrink: 0, zIndex: 50,
+        position: 'relative',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <IconBtn onClick={() => setShowLeft(v => !v)} title="Toggle sidebar" isMobile={isMobile}>

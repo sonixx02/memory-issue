@@ -125,6 +125,11 @@ button, input, textarea, select, a {
     -webkit-tap-highlight-color: transparent;
   }
 
+  /* Prevent double-tap zoom on interactive elements */
+  * {
+    touch-action: manipulation;
+  }
+
   /* Better touch targets on mobile */
   button {
     min-height: 36px;
