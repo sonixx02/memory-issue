@@ -101,17 +101,23 @@ button, input, textarea, select, a {
 /* ── Mobile-specific fixes ── */
 @media (max-width: 768px) {
   /* Prevent Chrome mobile address bar from causing layout shifts */
-  html, body {
-    height: -webkit-fill-available;
+  html {
     height: 100%;
+    height: -webkit-fill-available;
     overflow: hidden;
-    position: fixed;
-    width: 100%;
+  }
+
+  body {
+    height: 100%;
+    height: -webkit-fill-available;
+    overflow: hidden;
+    overscroll-behavior: none;
   }
 
   #root {
+    height: 100%;
     height: -webkit-fill-available;
-    height: 100vh;
+    overflow: hidden;
   }
 
   /* Prevent text selection highlight from being too aggressive */

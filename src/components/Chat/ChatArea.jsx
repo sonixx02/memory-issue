@@ -397,6 +397,9 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
       return;
     }
 
+    let writeTimer = null;
+    let latestText = '';
+
     try {
       const { messages: compiled, metadata: contextMeta } = await compileContext(currentChatId, currentWorkspaceId, { chatMode });
       if (contextMeta) {
@@ -406,8 +409,6 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
       const controller = new AbortController();
       abortRef.current = controller;
 
-      let latestText = '';
-      let writeTimer = null;
       streamingRef.current = { id: assistantMsg.id, text: '' };
       const DB_WRITE_INTERVAL = 800;
 

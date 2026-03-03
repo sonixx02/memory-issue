@@ -187,7 +187,7 @@ export default function AppShell() {
 
   return (
     <div style={{
-      height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column',
+      height: '100dvh', width: '100vw', display: 'flex', flexDirection: 'column',
       backgroundColor: tv('--bg-primary'), color: tv('--text-primary'),
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
       overflow: 'hidden',
