@@ -60,6 +60,26 @@ const PROVIDERS = [
       { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
     ],
   },
+  {
+    id: 'groq', label: 'Groq', placeholder: 'gsk_...', defaultModel: 'llama-3.3-70b-versatile',
+    models: [
+      { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile' },
+      { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant' },
+      { id: 'llama3-70b-8192', name: 'Llama 3 70B' },
+      { id: 'llama3-8b-8192', name: 'Llama 3 8B' },
+      { id: 'meta-llama/llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B' },
+      { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', name: 'Llama 4 Maverick 17B' },
+      { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B' },
+      { id: 'gemma2-9b-it', name: 'Gemma 2 9B' },
+      { id: 'qwen/qwen3-32b', name: 'Qwen 3 32B' },
+      { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill 70B' },
+      { id: 'mistral-saba-24b', name: 'Mistral Saba 24B' },
+      { id: 'compound-beta', name: 'Compound Beta (Agentic)' },
+      { id: 'compound-beta-mini', name: 'Compound Beta Mini' },
+      { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B' },
+      { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B' },
+    ],
+  },
 ];
 
 export default function SettingsModal({ open, onClose }) {

@@ -2,8 +2,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
-  SendHorizonal, Database, Zap, Loader2, Settings, AlertTriangle,
-  CheckCircle2, Bookmark, ChevronDown, Sparkles,
+  ArrowUp, Database, Zap, Loader2, Settings, AlertTriangle,
+  CheckCircle2, Bookmark, ChevronDown, Sparkles, MessageSquare,
   Paperclip, X, FileText, Image, Film, File, Search,
   Pencil, Check, Copy, Trash2, RefreshCw, Globe,
 } from 'lucide-react';
@@ -74,9 +74,29 @@ const STATIC_PROVIDERS = [
       { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
     ],
   },
+  {
+    id: 'groq', label: 'Groq', defaultModel: 'llama-3.3-70b-versatile',
+    models: [
+      { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile' },
+      { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant' },
+      { id: 'llama3-70b-8192', name: 'Llama 3 70B' },
+      { id: 'llama3-8b-8192', name: 'Llama 3 8B' },
+      { id: 'meta-llama/llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B' },
+      { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', name: 'Llama 4 Maverick 17B' },
+      { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B' },
+      { id: 'gemma2-9b-it', name: 'Gemma 2 9B' },
+      { id: 'qwen/qwen3-32b', name: 'Qwen 3 32B' },
+      { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill 70B' },
+      { id: 'mistral-saba-24b', name: 'Mistral Saba 24B' },
+      { id: 'compound-beta', name: 'Compound Beta (Agentic)' },
+      { id: 'compound-beta-mini', name: 'Compound Beta Mini' },
+      { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B' },
+      { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B' },
+    ],
+  },
 ];
 
-export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSettings }) {
+export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSettings, isMobile, tempMode, tempMessages, onTempMessagesChange }) {
   const [input, setInput] = useState('');
   const [sendHovered, setSendHovered] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -197,24 +217,25 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
   };
 
   const dbMessages = useLiveQuery(
-    () => currentChatId ? getMessagesByChat(currentChatId) : [],
-    [currentChatId],
+    () => (!tempMode && currentChatId) ? getMessagesByChat(currentChatId) : [],
+    [currentChatId, tempMode],
     []
   );
 
   const messages = useMemo(() => {
-    if (!streamingRef.current.id || !streamingText) return dbMessages;
-    return dbMessages?.map(m =>
+    const base = tempMode ? (tempMessages || []) : dbMessages;
+    if (!streamingRef.current.id || !streamingText) return base;
+    return base?.map(m =>
       m.id === streamingRef.current.id ? { ...m, content: streamingText } : m
     ) ?? [];
-  }, [dbMessages, streamingText]);
+  }, [dbMessages, tempMessages, tempMode, streamingText]);
 
   useEffect(() => {
-    if (!currentWorkspaceId) return;
+    if (!currentWorkspaceId || tempMode) return;
     loadEmbeddingModel().catch(() => {});
     const unsub = onEmbeddingStatusChange(setEmbeddingStatus);
     return unsub;
-  }, [currentWorkspaceId]);
+  }, [currentWorkspaceId, tempMode]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -228,7 +249,10 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
   }, [input]);
 
   const handleSend = useCallback(async () => {
-    if ((!input.trim() && pendingFiles.length === 0) || !currentChatId || isStreaming) return;
+    if ((!input.trim() && pendingFiles.length === 0) || isStreaming) return;
+    // For normal/workspace chats, require a chatId; temp mode doesn't need one
+    if (!tempMode && !currentChatId) return;
+
     const userText = input.trim();
     const filesToSend = [...pendingFiles];
     setInput('');
@@ -277,6 +301,56 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
         : `Attached files:\n${fileBlock}`;
     }
 
+    // ── Temp mode: messages stay in React state, never touch DB ──
+    if (tempMode) {
+      const tempUserId = 'tmp-' + Date.now();
+      const tempUserMsg = { id: tempUserId, role: 'user', content: fullUserText, timestamp: Date.now() };
+      const tempAsstId = 'tmp-' + (Date.now() + 1);
+      const tempAsstMsg = { id: tempAsstId, role: 'assistant', content: '...', timestamp: Date.now() + 1 };
+      onTempMessagesChange(prev => [...prev, tempUserMsg, tempAsstMsg]);
+      setIsStreaming(true);
+
+      try {
+        const chatMode = 'temporary';
+        const { messages: compiled } = await compileContext(null, null, { chatMode });
+        // Append temp history
+        const tempHistory = [...(tempMessages || []), tempUserMsg].map(m => ({ role: m.role, content: m.content }));
+        const fullCompiled = [compiled[0], ...tempHistory];
+
+        const controller = new AbortController();
+        abortRef.current = controller;
+        let latestText = '';
+        streamingRef.current = { id: tempAsstId, text: '' };
+
+        await streamChat(fullCompiled, (accumulated) => {
+          latestText = accumulated;
+          streamingRef.current.text = accumulated;
+          setStreamingText(accumulated);
+        }, controller.signal);
+
+        streamingRef.current = { id: null, text: '' };
+        setStreamingText('');
+        if (latestText) {
+          onTempMessagesChange(prev => prev.map(m => m.id === tempAsstId ? { ...m, content: latestText } : m));
+        }
+      } catch (err) {
+        streamingRef.current = { id: null, text: '' };
+        setStreamingText('');
+        if (err.name === 'AbortError') {
+          const partial = streamingRef.current.text || '';
+          onTempMessagesChange(prev => prev.map(m => m.id === tempAsstId ? { ...m, content: (partial || '') + '\n\n*(generation stopped)*' } : m));
+        } else {
+          onTempMessagesChange(prev => prev.map(m => m.id === tempAsstId ? { ...m, content: `Error: ${err.message}` } : m));
+          setErrorMsg(err.message);
+        }
+      } finally {
+        setIsStreaming(false);
+        abortRef.current = null;
+      }
+      return;
+    }
+
+    // ── Normal / Workspace mode: persist messages to DB ──
     const userMsg = await addMessage(currentChatId, 'user', fullUserText);
 
     // Store attachments in DB
@@ -306,7 +380,10 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
     const assistantMsg = await addMessage(currentChatId, 'assistant', '...');
     setIsStreaming(true);
 
-    const cached = await getCachedResponse(currentWorkspaceId, fullUserText);
+    // Determine chat mode for context compilation
+    const chatMode = currentWorkspaceId ? 'workspace' : 'normal';
+
+    const cached = currentWorkspaceId ? await getCachedResponse(currentWorkspaceId, fullUserText) : null;
     if (cached) {
       const speed = 15;
       let text = '';
@@ -321,7 +398,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
     }
 
     try {
-      const { messages: compiled, metadata: contextMeta } = await compileContext(currentChatId, currentWorkspaceId);
+      const { messages: compiled, metadata: contextMeta } = await compileContext(currentChatId, currentWorkspaceId, { chatMode });
       if (contextMeta) {
         console.log(`Context: ${contextMeta.pinnedCount} pinned, ${contextMeta.ragResultCount} RAG, ~${contextMeta.tokenEstimate} tokens`);
       }
@@ -351,18 +428,22 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
       setStreamingText('');
       if (latestText) {
         await updateMessageContent(assistantMsg.id, latestText);
-        await setCachedResponse(currentWorkspaceId, fullUserText, latestText);
+        if (currentWorkspaceId) {
+          await setCachedResponse(currentWorkspaceId, fullUserText, latestText);
+        }
 
-        // ── Smart snapshot nudge: detect decision-like language in AI response ──
-        const decisionPatterns = [
-          /\b(?:I recommend|I suggest|let'?s go with|the (?:best|right) (?:approach|choice|option)|we should use|final decision|decided to|going (?:forward )?with)\b/i,
-          /\b(?:architecture|stack|framework|database|deployment) (?:will be|is|should be|we'?ll use)\b/i,
-          /\b(?:trade-?off|pros? and cons?|weighing|comparing)\b/i,
-        ];
-        const hasDecision = decisionPatterns.some(p => p.test(latestText));
-        if (hasDecision && !snapshotNudge) {
-          setSnapshotNudge(true);
-          setTimeout(() => setSnapshotNudge(false), 8000); // auto-dismiss after 8s
+        // ── Smart snapshot nudge (workspace mode only) ──
+        if (currentWorkspaceId) {
+          const decisionPatterns = [
+            /\b(?:I recommend|I suggest|let'?s go with|the (?:best|right) (?:approach|choice|option)|we should use|final decision|decided to|going (?:forward )?with)\b/i,
+            /\b(?:architecture|stack|framework|database|deployment) (?:will be|is|should be|we'?ll use)\b/i,
+            /\b(?:trade-?off|pros? and cons?|weighing|comparing)\b/i,
+          ];
+          const hasDecision = decisionPatterns.some(p => p.test(latestText));
+          if (hasDecision && !snapshotNudge) {
+            setSnapshotNudge(true);
+            setTimeout(() => setSnapshotNudge(false), 8000);
+          }
         }
       }
 
@@ -371,8 +452,18 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
         autoTitleChat(currentChatId, fullUserText, latestText).catch(() => {});
       }
     } catch (err) {
+      // Always clean up streaming state on any error (including abort)
+      if (writeTimer) clearTimeout(writeTimer);
+      streamingRef.current = { id: null, text: '' };
+      setStreamingText('');
+
       if (err.name === 'AbortError') {
-        // cancelled
+        // Save partial response so it doesn't show as '...'
+        if (latestText) {
+          await updateMessageContent(assistantMsg.id, latestText + '\n\n*(generation stopped)*');
+        } else {
+          await updateMessageContent(assistantMsg.id, '*(generation stopped)*');
+        }
       } else if (err.message === 'NO_API_KEY') {
         await updateMessageContent(assistantMsg.id,
           'No API key configured. Click Settings to add your key.');
@@ -400,7 +491,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
         }, 2000);
       }
     }
-  }, [input, pendingFiles, currentChatId, currentWorkspaceId, isStreaming]);
+  }, [input, pendingFiles, currentChatId, currentWorkspaceId, isStreaming, tempMode, tempMessages, onTempMessagesChange]);
 
   const handleStop = () => abortRef.current?.abort();
 
@@ -480,8 +571,19 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
         }
       }
     } catch (err) {
+      // Always clean up streaming state on any error
+      if (writeTimer) clearTimeout(writeTimer);
+      streamingRef.current = { id: null, text: '' };
+      setStreamingText('');
+
       if (err.name === 'AbortError') {
-        // cancelled
+        // Save partial text so the message doesn't stay as '...'
+        const partialText = latestText || '';
+        if (partialText) {
+          await updateMessageContent(assistantMsg.id, partialText + '\n\n*(generation stopped)*');
+        } else {
+          await updateMessageContent(assistantMsg.id, '*(generation stopped)*');
+        }
       } else if (err.message === 'NO_API_KEY') {
         await updateMessageContent(assistantMsg.id,
           'No API key configured. Click Settings to add your key.');
@@ -648,7 +750,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
   }, []);
 
   // ─── Empty state ───
-  if (!currentChatId) {
+  if (!currentChatId && !tempMode) {
     return (
       <div style={{
         height: '100%', display: 'flex', flexDirection: 'column',
@@ -679,8 +781,19 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: tv('--bg-primary') }}>
 
+      {/* Temp chat banner */}
+      {tempMode && (
+        <div style={{
+          padding: '6px 16px', backgroundColor: '#f59e0b12', borderBottom: '1px solid #f59e0b25',
+          display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0,
+          fontSize: '12px', color: '#f59e0b', fontWeight: '500',
+        }}>
+          <Zap size={12} /> Temporary Chat — nothing is saved. Close or refresh to clear.
+        </div>
+      )}
+
       {/* Messages */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 0' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: isMobile ? '12px 0' : '20px 0', WebkitOverflowScrolling: 'touch' }}>
         {messages?.length === 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', textAlign: 'center', padding: '0 24px' }}>
             <div style={{
@@ -689,15 +802,19 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
               border: `1px solid ${tv('--border')}`,
               display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '16px',
             }}>
-              <Zap size={24} color={tv('--accent')} />
+              <MessageSquare size={24} color={tv('--accent')} />
             </div>
             <h3 style={{ margin: '0 0 8px', fontSize: '17px', fontWeight: '600', color: tv('--text-primary') }}>
-              Start a conversation
+              {tempMode ? 'Temporary Chat' : currentWorkspaceId ? 'Start a conversation' : 'General Chat'}
             </h3>
             <p style={{ margin: 0, color: tv('--text-muted'), fontSize: '13.5px', lineHeight: 1.7, maxWidth: '340px' }}>
-              Type your message below. Use <strong style={{ color: tv('--purple') }}>Snapshot</strong> to save important decisions to memory.
+              {tempMode
+                ? 'This chat is ephemeral — nothing is saved. Close or refresh to clear.'
+                : currentWorkspaceId
+                  ? <>Type your message below. Use <strong style={{ color: tv('--purple') }}>Memory</strong> to save important decisions.</>
+                  : 'Chat without a workspace. Your profile preferences still apply.'}
             </p>
-            <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+            <div style={{ display: 'flex', gap: '12px', marginTop: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
               {embeddingStatus !== 'idle' && (
                 <StatusPill
                   color={embeddingStatus === 'ready' ? tv('--success') : embeddingStatus === 'loading' ? tv('--warning') : tv('--error')}
@@ -709,7 +826,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
             </div>
           </div>
         ) : (
-          <div style={{ maxWidth: '800px', margin: '0 auto', padding: '0 24px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ maxWidth: '800px', margin: '0 auto', padding: isMobile ? '0 12px' : '0 24px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
             {messages?.map((msg, idx) => (
               <MessageBubble key={msg.id} message={msg} messages={messages} msgIndex={idx} workspaceId={currentWorkspaceId} chatId={currentChatId} onEditResend={handleEditResend} />
             ))}
@@ -719,7 +836,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
       </div>
 
       {/* ─── Input Area ─── */}
-      <div style={{ padding: '0 20px 20px', flexShrink: 0 }}>
+      <div style={{ padding: isMobile ? '0 8px 8px' : '0 20px 20px', flexShrink: 0 }}>
         <div style={{ maxWidth: '800px', margin: '0 auto' }}>
 
           {/* ── Snapshot Nudge Toast ── */}
@@ -1087,7 +1204,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
                   document.body
                 )}
 
-                <SnapshotButton onClick={handleSnapshot} status={snapshotStatus} />
+                {currentWorkspaceId && <SnapshotButton onClick={handleSnapshot} status={snapshotStatus} />}
 
                 <AttachButton onClick={() => fileInputRef.current?.click()} />
 
@@ -1120,7 +1237,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
                       transition: 'background-color 0.15s',
                     }}
                   >
-                    <SendHorizonal size={15} />
+                    <ArrowUp size={16} />
                   </button>
                 )}
               </div>
@@ -1383,6 +1500,36 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
   const [editDraft, setEditDraft] = useState('');
   const [copied, setCopied] = useState(false);
   const editRef = useRef(null);
+  const bubbleRef = useRef(null);
+
+  // Text selection → floating "Remember" button
+  const [selectionPopup, setSelectionPopup] = useState(null); // { text, x, y } or null
+
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+        // Small delay to allow click events on the popup button
+        setTimeout(() => setSelectionPopup(null), 200);
+        return;
+      }
+      // Only show if selection is within this bubble
+      if (bubbleRef.current && bubbleRef.current.contains(sel.anchorNode) && !isUser) {
+        const text = sel.toString().trim();
+        if (text.length > 5) {
+          const range = sel.getRangeAt(0);
+          const rect = range.getBoundingClientRect();
+          setSelectionPopup({
+            text,
+            x: rect.left + rect.width / 2,
+            y: rect.top - 8,
+          });
+        }
+      }
+    };
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+  }, [isUser]);
 
   useEffect(() => {
     if (editing && editRef.current) {
@@ -1435,10 +1582,13 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
     }
   }, [message.id]);
 
-  const handleRemember = () => {
-    setTeachContent(message.content?.slice(0, 200) || '');
+  const handleRemember = (prefillText) => {
+    const text = prefillText || message.content?.slice(0, 200) || '';
+    setTeachContent(text);
     setTeachMode(true);
     setTeachSaved(false);
+    setSelectionPopup(null);
+    window.getSelection()?.removeAllRanges();
   };
 
   const handleTeachSave = async () => {
@@ -1462,9 +1612,46 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
 
   return (
     <div
-      style={{ padding: '16px 0', borderBottom: `1px solid ${tv('--border')}08`, animation: 'fadeIn 0.2s ease' }}
+      ref={bubbleRef}
+      style={{ padding: '16px 0', borderBottom: `1px solid ${tv('--border')}08`, animation: 'fadeIn 0.2s ease', position: 'relative' }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     >
+      {/* Floating selection popup for remembering specific text */}
+      {selectionPopup && workspaceId && createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            left: `${selectionPopup.x}px`,
+            top: `${selectionPopup.y}px`,
+            transform: 'translate(-50%, -100%)',
+            zIndex: 9999,
+            animation: 'fadeIn 0.15s ease',
+          }}
+        >
+          <button
+            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleRemember(selectionPopup.text); }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '5px',
+              fontSize: '11px', fontWeight: '600', cursor: 'pointer',
+              color: '#fff', backgroundColor: tv('--purple'),
+              border: 'none', borderRadius: '8px',
+              padding: '6px 12px',
+              boxShadow: `0 4px 16px rgba(0,0,0,0.3)`,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <Bookmark size={11} /> Remember selection
+          </button>
+          <div style={{
+            width: 0, height: 0,
+            borderLeft: '6px solid transparent',
+            borderRight: '6px solid transparent',
+            borderTop: `6px solid ${tv('--purple')}`,
+            margin: '0 auto',
+          }} />
+        </div>,
+        document.body
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
         <div style={{
           width: '24px', height: '24px', borderRadius: '7px', flexShrink: 0,
@@ -1476,7 +1663,7 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
           {isUser ? 'U' : <Sparkles size={12} />}
         </div>
         <span style={{ fontSize: '13px', fontWeight: '600', color: tv('--text-primary') }}>
-          {isUser ? 'You' : 'Snapshot AI'}
+          {isUser ? 'You' : 'Synapse'}
         </span>
       </div>
 
@@ -1565,15 +1752,18 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
       )}
 
       {!isUser && hovered && !teachMode && workspaceId && (
-        <div style={{ paddingLeft: '32px', marginTop: '6px', display: 'flex' }}>
-          <button onClick={handleRemember} style={{
+        <div style={{ paddingLeft: '32px', marginTop: '6px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          <button onClick={() => handleRemember()} style={{
             display: 'flex', alignItems: 'center', gap: '4px',
             fontSize: '11px', color: tv('--purple'), background: 'none',
             border: `1px solid ${tv('--purple')}33`, borderRadius: '6px',
             padding: '3px 9px', cursor: 'pointer', fontWeight: '500',
           }}>
-            <Bookmark size={10} /> Remember this
+            <Bookmark size={10} /> Remember all
           </button>
+          <span style={{ fontSize: '10px', color: tv('--text-muted'), alignSelf: 'center' }}>
+            or select specific text to remember
+          </span>
         </div>
       )}
 

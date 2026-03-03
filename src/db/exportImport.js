@@ -13,7 +13,7 @@ export async function exportAllData() {
     const a = document.createElement('a');
     a.href = url;
     const date = new Date().toISOString().split('T')[0];
-    a.download = `snapshot-ai-backup-${date}.json`;
+    a.download = `synapse-backup-${date}.json`;
     a.click();
 
     setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -29,7 +29,7 @@ export async function exportMemoryItems(workspaceId) {
         : await db.memoryItems.toArray();
 
     const payload = {
-        _format: 'snapshot-ai-memory',
+        _format: 'synapse-memory',
         _version: 1,
         exportedAt: new Date().toISOString(),
         workspaceId: workspaceId || null,
@@ -42,7 +42,7 @@ export async function exportMemoryItems(workspaceId) {
     const a = document.createElement('a');
     a.href = url;
     const date = new Date().toISOString().split('T')[0];
-    a.download = `snapshot-ai-memory-${date}.json`;
+    a.download = `synapse-memory-${date}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -57,7 +57,7 @@ export async function importMemoryItems(file, { targetWorkspaceId } = {}) {
         const data = JSON.parse(text);
 
         let items;
-        if (data._format === 'snapshot-ai-memory') {
+        if (data._format === 'synapse-memory' || data._format === 'snapshot-ai-memory') {
             items = data.items;
         } else if (data.memoryItems) {
             // Full backup — extract memoryItems

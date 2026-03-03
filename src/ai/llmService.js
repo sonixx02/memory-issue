@@ -40,6 +40,8 @@ export async function streamChat(messages, onChunk, signal) {
     result = await streamGemini(messages, settings, wrappedOnChunk, signal);
   } else if (settings.provider === 'openrouter') {
     result = await streamOpenRouter(messages, settings, wrappedOnChunk, signal);
+  } else if (settings.provider === 'groq') {
+    result = await streamGroq(messages, settings, wrappedOnChunk, signal);
   } else {
     result = await streamOpenAI(messages, settings, wrappedOnChunk, signal);
   }
@@ -190,6 +192,43 @@ async function streamGemini(messages, settings, onChunk, signal) {
   }, onChunk, signal);
 }
 
+// ── Groq streaming (OpenAI-compatible) ──────────────────────────────────────
+
+async function streamGroq(messages, settings, onChunk, signal) {
+  const model = settings.model || 'llama-3.3-70b-versatile';
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: true,
+      temperature: 0.7,
+      max_completion_tokens: 4096,
+    }),
+    signal,
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.statusText);
+    throw new Error(`Groq API error (${res.status}): ${err}`);
+  }
+
+  return readSSEStream(res.body, (data) => {
+    if (data === '[DONE]') return null;
+    try {
+      const parsed = JSON.parse(data);
+      return parsed.choices?.[0]?.delta?.content || '';
+    } catch {
+      return '';
+    }
+  }, onChunk, signal);
+}
+
 // ── OpenRouter streaming (OpenAI-compatible) ───────────────────────────────
 
 async function streamOpenRouter(messages, settings, onChunk, signal) {
@@ -312,6 +351,8 @@ export async function chatCompletion(messages) {
     result = await completionGemini(messages, settings);
   } else if (settings.provider === 'openrouter') {
     result = await completionOpenRouter(messages, settings);
+  } else if (settings.provider === 'groq') {
+    result = await completionGroq(messages, settings);
   } else {
     result = await completionOpenAI(messages, settings);
   }
@@ -394,6 +435,24 @@ async function completionGemini(messages, settings) {
   }
   const data = await res.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+async function completionGroq(messages, settings) {
+  const model = settings.model || 'llama-3.3-70b-versatile';
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.apiKey}`,
+    },
+    body: JSON.stringify({ model, messages, temperature: 0.3, max_completion_tokens: 2048 }),
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.statusText);
+    throw new Error(`Groq API error (${res.status}): ${err}`);
+  }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || '';
 }
 
 async function completionOpenRouter(messages, settings) {

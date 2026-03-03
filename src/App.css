@@ -98,6 +98,64 @@ button, input, textarea, select, a {
   margin-bottom: 0;
 }
 
+/* ── Mobile-specific fixes ── */
+@media (max-width: 768px) {
+  /* Prevent Chrome mobile address bar from causing layout shifts */
+  html, body {
+    height: -webkit-fill-available;
+    height: 100%;
+    overflow: hidden;
+    position: fixed;
+    width: 100%;
+  }
+
+  #root {
+    height: -webkit-fill-available;
+    height: 100vh;
+  }
+
+  /* Prevent text selection highlight from being too aggressive */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Better touch targets on mobile */
+  button {
+    min-height: 36px;
+    min-width: 36px;
+  }
+
+  /* Fix textarea zoom on iOS/Chrome */
+  textarea, input, select {
+    font-size: 16px !important;
+  }
+
+  /* Smoother scrolling on mobile */
+  div[style*="overflowY: auto"],
+  div[style*="overflow-y: auto"] {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Swipe hint indicators */
+  @keyframes swipeHintLeft {
+    0% { opacity: 0; transform: translateX(10px); }
+    50% { opacity: 0.5; }
+    100% { opacity: 0; transform: translateX(-10px); }
+  }
+
+  @keyframes swipeHintRight {
+    0% { opacity: 0; transform: translateX(-10px); }
+    50% { opacity: 0.5; }
+    100% { opacity: 0; transform: translateX(10px); }
+  }
+}
+
+/* ── Selection popup animation ── */
+@keyframes popIn {
+  from { opacity: 0; transform: translate(-50%, -100%) scale(0.9); }
+  to { opacity: 1; transform: translate(-50%, -100%) scale(1); }
+}
+
 /* ── File attachment previews ── */
 .attachment-grid {
   display: grid;

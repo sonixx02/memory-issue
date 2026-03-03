@@ -7,10 +7,22 @@ import { getRollingSummary } from './summaryService.js';
 import { embedText } from './embeddingService.js';
 import { debugLog } from './debugLogger.js';
 
+// ── Casual / greeting detection ──
+const CASUAL_PATTERNS = /^\s*(hi+|hey+|hello+|howdy|yo+|sup|what'?s? ?up|how ?are ?you|good ?(morning|afternoon|evening|night)|thanks?|thank ?you|ok+|okay|bye+|goodbye|see ?ya|lol|lmao|rofl|haha|heh|hmm+|wow|cool|nice|great|awesome|gm|gn|bruh|yep|yea+h?|nah|nope|sure|kk?|ty|np|gg|omg|oh+|ah+|ugh|hm+)\s*[!?.~]*\s*$/i;
+const MAX_CASUAL_LENGTH = 50;
+
+function isCasualMessage(text) {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length > MAX_CASUAL_LENGTH) return false;
+  return CASUAL_PATTERNS.test(trimmed);
+}
+
 // ── Token budget constants ──
 const CHARS_PER_TOKEN = 4; // rough estimate for English text
 const MEMORY_TOKEN_BUDGET = 2000;
 export const MEMORY_CHAR_BUDGET = MEMORY_TOKEN_BUDGET * CHARS_PER_TOKEN;
+const RAG_CHAR_BUDGET = 3000 * CHARS_PER_TOKEN; // ~3000 tokens for RAG context
 
 // Category display labels
 const CATEGORY_ORDER = ['decision', 'rejected', 'fact', 'preference', 'code_style'];
@@ -43,14 +55,22 @@ const CATEGORY_RELEVANCE_BONUS = {
  *
  * @returns {{ messages: Array, metadata: object }}
  */
-export async function compileContext(chatId, workspaceId, { maxMessages = 50 } = {}) {
+export async function compileContext(chatId, workspaceId, { maxMessages = 50, chatMode } = {}) {
+  // Auto-detect mode if not explicitly set
+  if (!chatMode) {
+    chatMode = workspaceId ? 'workspace' : 'normal';
+  }
+
   const t0 = performance.now();
+  const isWorkspace = chatMode === 'workspace';
+  const isTemp = chatMode === 'temporary';
+
   const [workspace, globalProfile, recentMessages, pinnedMemories, rollingSummary] = await Promise.all([
-    workspaceId ? getWorkspace(workspaceId) : null,
-    getGlobalProfile(),
-    getRecentMessages(chatId, maxMessages),
-    workspaceId ? getPinnedMemories(workspaceId) : {},
-    chatId ? getRollingSummary(chatId) : null,
+    isWorkspace && workspaceId ? getWorkspace(workspaceId) : null,
+    !isTemp ? getGlobalProfile() : null,
+    chatId ? getRecentMessages(chatId, maxMessages) : [],
+    isWorkspace && workspaceId ? getPinnedMemories(workspaceId) : {},
+    isWorkspace && chatId ? getRollingSummary(chatId) : null,
   ]);
 
   debugLog('context:data-fetched', {
@@ -67,7 +87,9 @@ export async function compileContext(chatId, workspaceId, { maxMessages = 50 } =
   const lastUserMsg = [...recentMessages].reverse().find(m => m.role === 'user');
   let ragResults = [];
   let queryEmbedding = null;
-  if (lastUserMsg && workspaceId) {
+  const casual = lastUserMsg ? isCasualMessage(lastUserMsg.content) : false;
+
+  if (lastUserMsg && isWorkspace && workspaceId && !casual) {
     try {
       // Embed query once — reused for RAG search AND memory relevance scoring
       queryEmbedding = await embedText(lastUserMsg.content);
@@ -77,9 +99,21 @@ export async function compileContext(chatId, workspaceId, { maxMessages = 50 } =
         ? recentMessages[0].timestamp
         : Infinity;
       ragResults = ragResults.filter(r => r.timestamp < oldestRecentTs);
+      // Drop low-relevance results (score < 0.4) to avoid injecting loosely related context
+      ragResults = ragResults.filter(r => (r.score ?? 1) >= 0.4);
+      // Enforce RAG character budget
+      let ragCharsRemaining = RAG_CHAR_BUDGET;
+      ragResults = ragResults.filter(r => {
+        const cost = (r.text?.length || 0) + 20; // +20 for date prefix
+        if (ragCharsRemaining - cost < 0) return false;
+        ragCharsRemaining -= cost;
+        return true;
+      });
     } catch (err) {
       console.warn('RAG search skipped:', err.message);
     }
+  } else if (casual) {
+    debugLog('context:casual-skip', { message: lastUserMsg?.content, reason: 'casual/greeting detected — skipping RAG' });
   }
 
   // getPinnedMemories returns { items, grouped } — extract the grouped map
@@ -87,7 +121,7 @@ export async function compileContext(chatId, workspaceId, { maxMessages = 50 } =
   const pinnedGrouped = pinnedMemories?.grouped || pinnedMemories || {};
 
   const { systemPrompt, injectedItemIds } = buildSystemPrompt(
-    globalProfile, workspace, pinnedGrouped, ragResults, rollingSummary, queryEmbedding
+    globalProfile, workspace, pinnedGrouped, ragResults, rollingSummary, queryEmbedding, casual, chatMode
   );
 
   // Bump usage stats for injected memory items (fire-and-forget)
@@ -134,164 +168,185 @@ export async function compileContext(chatId, workspaceId, { maxMessages = 50 } =
  *
  * Returns the prompt string and IDs of injected items (for usage tracking).
  */
-function buildSystemPrompt(globalProfile, workspace, pinnedMemories, ragResults = [], rollingSummary = null, queryEmbedding = null) {
-  const lines = [
-    'You are Snapshot AI — a project-aware assistant embedded in a local-first workspace.',
-    'You help the user make decisions, write code, and think through architecture.',
-    'Be concise, direct, and technical. Use markdown formatting.',
-    '',
-  ];
+function buildSystemPrompt(globalProfile, workspace, pinnedMemories, ragResults = [], rollingSummary = null, queryEmbedding = null, isCasual = false, chatMode = 'workspace') {
+  const lines = [];
   const injectedItemIds = [];
 
-  // ── 1. Global Profile ──
-  lines.push('## User Profile & Global Preferences');
-  if (globalProfile?.role || globalProfile?.tone || globalProfile?.preferences?.length > 0) {
-    if (globalProfile.role) lines.push(`- **User Role:** ${globalProfile.role}`);
-    if (globalProfile.tone) lines.push(`- **Preferred Tone:** ${globalProfile.tone}`);
-    if (globalProfile.preferences?.length > 0) {
-      lines.push('- **Global Instructions:**');
-      globalProfile.preferences.forEach(p => lines.push(`  - ${p}`));
-    }
-  } else {
-    lines.push('No global preferences set yet.');
-  }
+  // ── Core Identity ──
+  lines.push('<identity>');
+  lines.push('You are Synapse — a knowledgeable, versatile assistant.');
+  lines.push('- Be concise and direct. Short answers for simple questions, detailed for complex ones.');
+  lines.push('- Use markdown formatting: code blocks with language tags, lists, headers, bold/italic.');
+  lines.push('- Match the user\'s tone — casual for casual, technical for technical, thorough when depth is needed.');
+  lines.push('- Show reasoning naturally when solving complex problems. Don\'t force rigid section headers.');
+  lines.push('- Never pad responses with filler, unnecessary pleasantries, or redundant caveats.');
+  lines.push('</identity>');
   lines.push('');
 
-  // ── 2. Pinned Memory Items (relevance-scored if embedding available) ──
-  const allPinnedItems = [];
-  for (const category of CATEGORY_ORDER) {
-    const items = pinnedMemories[category];
-    if (!items?.length) continue;
-    for (const item of items) {
-      allPinnedItems.push(item);
-    }
+  // ── Casual fast-path ──
+  if (isCasual) {
+    lines.push('<mode>casual</mode>');
+    lines.push('The user sent a casual greeting or short social message.');
+    lines.push('Respond warmly but briefly — one or two sentences, like a friendly colleague.');
+    lines.push('Do not reference workspace, memory, or project context.');
+    lines.push('');
+    return { systemPrompt: lines.join('\n'), injectedItemIds };
   }
 
-  if (allPinnedItems.length > 0) {
-    lines.push('## Workspace Memory');
-    lines.push('');
+  // ── Chat mode tag ──
+  lines.push(`<mode>${chatMode}</mode>`);
+  lines.push('');
 
-    let charBudgetRemaining = MEMORY_CHAR_BUDGET;
-
-    if (queryEmbedding) {
-      // ── Relevance-scored assembly ──
-      // Score each item against the query embedding using cosine similarity
-      const scored = allPinnedItems.map(item => {
-        let relevance = CATEGORY_RELEVANCE_BONUS[item.category] || 0;
-
-        // If item has an embedding cached, compute similarity
-        // Otherwise use category bonus only (still better than no ranking)
-        if (item._embedding) {
-          relevance += cosineSimilarity(queryEmbedding, item._embedding);
-        } else {
-          // Lightweight keyword overlap score as fallback
-          relevance += keywordOverlap(item.content, queryEmbedding._queryText || '');
-        }
-
-        return { item, relevance };
-      });
-
-      // Sort by relevance descending
-      scored.sort((a, b) => b.relevance - a.relevance);
-
-      // Group by category for display (but iterate in relevance order for budget)
-      const selectedByCategory = {};
-      for (const { item } of scored) {
-        const line = `- ${item.content}`;
-        if (charBudgetRemaining - line.length < 0) continue;
-        charBudgetRemaining -= line.length;
-        if (!selectedByCategory[item.category]) selectedByCategory[item.category] = [];
-        selectedByCategory[item.category].push(item);
-        injectedItemIds.push(item.id);
-      }
-
-      // Render grouped by category for readability
-      for (const category of CATEGORY_ORDER) {
-        const items = selectedByCategory[category];
-        if (!items?.length) continue;
-        const label = CATEGORY_LABELS[category] || category;
-        lines.push(`### ${label}`);
-        for (const item of items) {
-          lines.push(`- ${item.content}`);
-        }
-        lines.push('');
+  // ── User Profile (workspace + normal modes) ──
+  if (chatMode !== 'temporary') {
+    lines.push('<user-profile>');
+    if (globalProfile?.role || globalProfile?.tone || globalProfile?.preferences?.length > 0) {
+      if (globalProfile.role) lines.push(`Role: ${globalProfile.role}`);
+      if (globalProfile.tone) lines.push(`Preferred tone: ${globalProfile.tone}`);
+      if (globalProfile.preferences?.length > 0) {
+        lines.push('Custom instructions:');
+        globalProfile.preferences.forEach(p => lines.push(`- ${p}`));
       }
     } else {
-      // ── Fallback: fixed category order (original behavior) ──
-      for (const category of CATEGORY_ORDER) {
-        const items = pinnedMemories[category];
-        if (!items?.length) continue;
-        if (charBudgetRemaining <= 0) break;
+      lines.push('No user preferences set.');
+    }
+    lines.push('</user-profile>');
+    lines.push('');
+  }
 
-        const label = CATEGORY_LABELS[category] || category;
-        const sectionHeader = `### ${label}`;
-        charBudgetRemaining -= sectionHeader.length;
+  // ── Workspace Memory (workspace mode only) ──
+  if (chatMode === 'workspace') {
+    const allPinnedItems = [];
+    for (const category of CATEGORY_ORDER) {
+      const items = pinnedMemories[category];
+      if (!items?.length) continue;
+      for (const item of items) {
+        allPinnedItems.push(item);
+      }
+    }
 
-        const itemLines = [];
-        for (const item of items) {
+    if (allPinnedItems.length > 0) {
+      lines.push('<workspace-memory>');
+
+      let charBudgetRemaining = MEMORY_CHAR_BUDGET;
+
+      if (queryEmbedding) {
+        // ── Relevance-scored assembly ──
+        const scored = allPinnedItems.map(item => {
+          let relevance = CATEGORY_RELEVANCE_BONUS[item.category] || 0;
+          if (item._embedding) {
+            relevance += cosineSimilarity(queryEmbedding, item._embedding);
+          } else {
+            relevance += keywordOverlap(item.content, queryEmbedding._queryText || '');
+          }
+          return { item, relevance };
+        });
+
+        scored.sort((a, b) => b.relevance - a.relevance);
+
+        const selectedByCategory = {};
+        for (const { item } of scored) {
           const line = `- ${item.content}`;
-          if (charBudgetRemaining - line.length < 0) break;
+          if (charBudgetRemaining - line.length < 0) continue;
           charBudgetRemaining -= line.length;
-          itemLines.push(line);
+          if (!selectedByCategory[item.category]) selectedByCategory[item.category] = [];
+          selectedByCategory[item.category].push(item);
           injectedItemIds.push(item.id);
         }
 
-        if (itemLines.length > 0) {
-          lines.push(sectionHeader);
-          lines.push(...itemLines);
-          lines.push('');
+        for (const category of CATEGORY_ORDER) {
+          const items = selectedByCategory[category];
+          if (!items?.length) continue;
+          const label = CATEGORY_LABELS[category] || category;
+          lines.push(`[${label}]`);
+          for (const item of items) {
+            lines.push(`- ${item.content}`);
+          }
+        }
+      } else {
+        // ── Fallback: fixed category order ──
+        for (const category of CATEGORY_ORDER) {
+          const items = pinnedMemories[category];
+          if (!items?.length) continue;
+          if (charBudgetRemaining <= 0) break;
+
+          const label = CATEGORY_LABELS[category] || category;
+          const sectionHeader = `[${label}]`;
+          charBudgetRemaining -= sectionHeader.length;
+
+          const itemLines = [];
+          for (const item of items) {
+            const line = `- ${item.content}`;
+            if (charBudgetRemaining - line.length < 0) break;
+            charBudgetRemaining -= line.length;
+            itemLines.push(line);
+            injectedItemIds.push(item.id);
+          }
+
+          if (itemLines.length > 0) {
+            lines.push(sectionHeader);
+            lines.push(...itemLines);
+          }
         }
       }
+
+      lines.push('</workspace-memory>');
+      lines.push('');
+    } else if (workspace?.stateFile) {
+      // ── Fallback: legacy stateFile ──
+      const s = workspace.stateFile;
+      lines.push('<workspace-memory>');
+      if (s.project_goal) lines.push(`Project Goal: ${s.project_goal}`);
+      if (s.current_status) lines.push(`Current Status: ${s.current_status}`);
+      if (s.locked_decisions?.length) lines.push(`Locked Decisions: ${s.locked_decisions.join(' • ')}`);
+      if (s.rejected_ideas?.length) lines.push(`Rejected Ideas: ${s.rejected_ideas.join(' • ')}`);
+      if (s.key_insights?.length) lines.push(`Key Insights: ${s.key_insights.join(' • ')}`);
+      lines.push('</workspace-memory>');
+      lines.push('');
     }
-
-    lines.push('Respect locked decisions. Do not suggest rejected ideas unless the user explicitly reconsiders.');
-  } else if (workspace?.stateFile) {
-    // ── Fallback: legacy stateFile ──
-    const s = workspace.stateFile;
-    lines.push('## Current Workspace Memory');
-    lines.push('');
-    if (s.project_goal) lines.push(`**Project Goal:** ${s.project_goal}`);
-    if (s.current_status) lines.push(`**Current Status:** ${s.current_status}`);
-    if (s.locked_decisions?.length) lines.push(`**Locked Decisions:** ${s.locked_decisions.join(' • ')}`);
-    if (s.rejected_ideas?.length) lines.push(`**Rejected Ideas:** ${s.rejected_ideas.join(' • ')}`);
-    if (s.key_insights?.length) lines.push(`**Key Insights:** ${s.key_insights.join(' • ')}`);
-    lines.push('');
-    lines.push('Respect locked decisions. Do not suggest rejected ideas unless the user explicitly reconsiders.');
-  } else {
-    lines.push('No workspace memory has been committed yet. The user should use "Commit Snapshot" to lock in important decisions.');
   }
 
-  // ── 3. Rolling Conversation Summary ──
-  if (rollingSummary) {
-    lines.push('');
-    lines.push('## Conversation Summary (older messages)');
-    lines.push('The following summarizes earlier parts of this conversation:');
-    lines.push('');
+  // ── Rolling Conversation Summary (workspace mode only) ──
+  if (chatMode === 'workspace' && rollingSummary) {
+    lines.push('<conversation-summary>');
+    lines.push('Summary of earlier parts of this conversation:');
     lines.push(rollingSummary);
+    lines.push('</conversation-summary>');
     lines.push('');
-    lines.push('Use this summary for continuity. The full recent messages follow below.');
   }
 
-  // ── 4. RAG — relevant past context ──
-  if (ragResults.length > 0) {
-    lines.push('');
-    lines.push('## Relevant Past Context');
-    lines.push('The following are relevant excerpts from previous conversations in this workspace:');
-    lines.push('');
+  // ── RAG — relevant past context (workspace mode only) ──
+  if (chatMode === 'workspace' && ragResults.length > 0) {
+    lines.push('<relevant-history>');
+    lines.push('Relevant excerpts from previous conversations in this workspace:');
     for (const result of ragResults) {
       const date = new Date(result.timestamp).toLocaleDateString();
-      lines.push(`> [${date}] ${result.text}`);
+      lines.push(`[${date}] ${result.text}`);
     }
+    lines.push('</relevant-history>');
     lines.push('');
-    lines.push('Use this past context to maintain continuity. Do not contradict previously discussed details unless the user explicitly changes direction.');
   }
 
-  // ── 5. Behavioral guardrails ──
-  lines.push('');
-  lines.push('## Important Rules');
-  lines.push('- When the user makes an important decision, remind them to hit "Commit Snapshot" to persist it.');
-  lines.push('- If your memory contains conflicting information, acknowledge the conflict and ask the user to clarify.');
-  lines.push('- Never fabricate details about past conversations — if you are unsure, say so.');
+  // ── Guidelines ──
+  lines.push('<guidelines>');
+  if (chatMode === 'workspace') {
+    lines.push('- When using workspace memory in your response, acknowledge it naturally: "Based on your preference for..." or "Since you decided to use..."');
+    lines.push('- Don\'t list every memory reference mechanically — weave relevant context into your answer.');
+    lines.push('- For important decisions or insights worth persisting, suggest the user save them with "Commit Snapshot".');
+    lines.push('- If memory contains conflicting information, point out the conflict and ask for clarification.');
+    lines.push('- Respect locked decisions. Do not re-suggest rejected ideas unless the user explicitly reconsiders.');
+  }
+  if (chatMode === 'normal') {
+    lines.push('- This is a general chat without workspace context. Focus on being helpful with broad knowledge.');
+    lines.push('- User profile preferences above still apply.');
+  }
+  if (chatMode === 'temporary') {
+    lines.push('- This is a temporary chat — nothing is saved. Be helpful, concise, and treat each exchange fresh.');
+  }
+  lines.push('- Never fabricate details about past conversations or user information not provided in your context.');
+  lines.push('- You do NOT have real-time internet access. If asked for live news, current events, or real-time data, clearly state this limitation and suggest the user check a source directly.');
+  lines.push('- Do not hallucinate or assume facts about the user that are not in the provided context.');
+  lines.push('</guidelines>');
 
   return { systemPrompt: lines.join('\n'), injectedItemIds };
 }

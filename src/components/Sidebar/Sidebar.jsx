@@ -1,13 +1,15 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Plus, Trash2, ChevronRight, ChevronDown, MessageSquare, FolderOpen, Edit3, Check, X } from 'lucide-react';
+import { Plus, Trash2, ChevronRight, ChevronDown, MessageSquare, FolderOpen, Edit3, Check, X, Zap } from 'lucide-react';
 import { getAllWorkspaces, createWorkspace, deleteWorkspace, renameWorkspace } from '../../db/workspaceHelpers.js';
-import { getChatsByWorkspace, createChat, deleteChat, renameChat } from '../../db/chatHelpers.js';
+import { getChatsByWorkspace, createChat, deleteChat, renameChat, getGeneralChats } from '../../db/chatHelpers.js';
 import { useState, useRef, useEffect } from 'react';
 import { tv } from '../../theme/ThemeContext.jsx';
 
-export default function Sidebar({ selectedWorkspaceId, selectedChatId, onSelectWorkspace, onSelectChat }) {
+export default function Sidebar({ selectedWorkspaceId, selectedChatId, onSelectWorkspace, onSelectChat, onStartTempChat, isTempChatActive }) {
   const workspaces = useLiveQuery(() => getAllWorkspaces(), []);
+  const generalChats = useLiveQuery(() => getGeneralChats(), []);
   const [expanded, setExpanded] = useState({});
+  const [generalExpanded, setGeneralExpanded] = useState(true);
 
   const toggle = (id) => setExpanded(p => ({ ...p, [id]: !p[id] }));
 
@@ -17,6 +19,12 @@ export default function Sidebar({ selectedWorkspaceId, selectedChatId, onSelectW
     const ws = await createWorkspace(name.trim());
     onSelectWorkspace(ws.id);
     setExpanded(p => ({ ...p, [ws.id]: true }));
+  };
+
+  const handleNewGeneralChat = async () => {
+    const chat = await createChat(null, 'New Chat');
+    onSelectWorkspace(null);
+    onSelectChat(chat.id);
   };
 
   const handleDeleteWorkspace = async (e, id) => {
@@ -42,17 +50,59 @@ export default function Sidebar({ selectedWorkspaceId, selectedChatId, onSelectW
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* Action buttons */}
       <div style={{
-        padding: '12px 12px 10px', borderBottom: `1px solid ${tv('--border')}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
+        padding: '10px 10px 8px', borderBottom: `1px solid ${tv('--border')}`,
+        display: 'flex', gap: '6px', flexShrink: 0,
       }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: '700', color: tv('--text-muted'), textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-          <FolderOpen size={13} /> Workspaces
-        </span>
-        <HoverBtn onClick={handleNewWorkspace} title="New Workspace"><Plus size={15} /></HoverBtn>
+        <SidebarActionBtn onClick={handleNewGeneralChat} icon={<Plus size={13} />} label="New Chat" />
+        <SidebarActionBtn onClick={onStartTempChat} icon={<Zap size={13} />} label="Temp Chat" active={isTempChatActive} accent />
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '6px 6px' }}>
+        {/* General Chats section */}
+        {generalChats && generalChats.length > 0 && (
+          <div style={{ marginBottom: '4px' }}>
+            <div
+              onClick={() => setGeneralExpanded(p => !p)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 6px',
+                cursor: 'pointer', borderRadius: '6px',
+              }}
+            >
+              <span style={{ color: tv('--text-muted'), display: 'flex', flexShrink: 0 }}>
+                {generalExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </span>
+              <span style={{ fontSize: '11px', fontWeight: '700', color: tv('--text-muted'), textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                Chats
+              </span>
+            </div>
+            {generalExpanded && (
+              <div style={{ marginLeft: '18px', marginTop: '1px', marginBottom: '4px' }}>
+                {generalChats.map(chat => (
+                  <ChatRow
+                    key={chat.id}
+                    chat={chat}
+                    isSelected={selectedChatId === chat.id && !selectedWorkspaceId && !isTempChatActive}
+                    onSelect={() => { onSelectWorkspace(null); onSelectChat(chat.id); }}
+                    onDelete={(e) => handleDeleteChat(e, chat.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Workspaces section */}
+        <div style={{
+          padding: '4px 6px 6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: '700', color: tv('--text-muted'), textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            <FolderOpen size={13} /> Workspaces
+          </span>
+          <HoverBtn onClick={handleNewWorkspace} title="New Workspace"><Plus size={15} /></HoverBtn>
+        </div>
+
         {!workspaces || workspaces.length === 0 ? (
           <div style={{ fontSize: '12.5px', color: tv('--text-muted'), textAlign: 'center', padding: '32px 16px', lineHeight: 1.7 }}>
             No workspaces yet.<br />Click <strong style={{ color: tv('--text-secondary') }}>+</strong> to create one.
@@ -340,6 +390,27 @@ function MiniBtn({ onClick, title, color, children }) {
     <button onClick={onClick} title={title} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
       style={{ background: h ? `${color}22` : 'none', border: 'none', color: h ? color : tv('--text-muted'), cursor: 'pointer', padding: '3px', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {children}
+    </button>
+  );
+}
+
+function SidebarActionBtn({ onClick, icon, label, active, accent }) {
+  const [h, setH] = useState(false);
+  const bg = active ? tv('--accent-soft') : h ? tv('--bg-hover') : 'transparent';
+  const color = active ? tv('--accent') : accent && h ? tv('--accent') : h ? tv('--text-primary') : tv('--text-secondary');
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setH(true)}
+      onMouseLeave={() => setH(false)}
+      style={{
+        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
+        padding: '6px 8px', borderRadius: '7px', border: `1px solid ${active ? tv('--accent') : tv('--border')}`,
+        fontSize: '12px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit',
+        background: bg, color, transition: 'all 0.15s',
+      }}
+    >
+      {icon} {label}
     </button>
   );
 }

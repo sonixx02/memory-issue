@@ -1,12 +1,12 @@
 import { v4 as uuidv4 } from 'uuid';
 import db from './database.js';
 
-// Create a new chat thread inside a workspace
-export async function createChat(workspaceId, title = 'New Chat') {
+// Create a new chat thread. workspaceId=null for general (non-workspace) chats.
+export async function createChat(workspaceId = null, title = 'New Chat') {
   const now = Date.now();
   const chat = {
     id: uuidv4(),
-    workspaceId,
+    workspaceId: workspaceId ?? null,
     title,
     createdAt: now,
     updatedAt: now,
@@ -18,6 +18,14 @@ export async function createChat(workspaceId, title = 'New Chat') {
 // Get all chats for a workspace, newest first
 export function getChatsByWorkspace(workspaceId) {
   return db.chats.where('workspaceId').equals(workspaceId).reverse().sortBy('createdAt');
+}
+
+// Get all general chats (no workspace), newest first
+export async function getGeneralChats() {
+  const all = await db.chats.toArray();
+  return all
+    .filter(c => c.workspaceId === null || c.workspaceId === undefined)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
 // Get a single chat by ID
