@@ -126,7 +126,7 @@ export async function compileContext(chatId, workspaceId, { maxMessages = 50, ch
 
   // Bump usage stats for injected memory items (fire-and-forget)
   if (injectedItemIds.length > 0) {
-    Promise.all(injectedItemIds.map(id => bumpMemoryUsage(id))).catch(() => {});
+    Promise.all(injectedItemIds.map(id => bumpMemoryUsage(id))).catch(() => { });
   }
 
   // Convert DB messages to the OpenAI-style role/content format
@@ -179,6 +179,7 @@ function buildSystemPrompt(globalProfile, workspace, pinnedMemories, ragResults 
   lines.push('- Use markdown formatting: code blocks with language tags, lists, headers, bold/italic.');
   lines.push('- Match the user\'s tone — casual for casual, technical for technical, thorough when depth is needed.');
   lines.push('- Show reasoning naturally when solving complex problems. Don\'t force rigid section headers.');
+  lines.push('- When thinking through complex problems, wrap your internal reasoning in <think>...</think> tags. This reasoning will be shown in a collapsible section — the user sees only your final answer by default.');
   lines.push('- Never pad responses with filler, unnecessary pleasantries, or redundant caveats.');
   lines.push('</identity>');
   lines.push('');
@@ -344,7 +345,10 @@ function buildSystemPrompt(globalProfile, workspace, pinnedMemories, ragResults 
     lines.push('- This is a temporary chat — nothing is saved. Be helpful, concise, and treat each exchange fresh.');
   }
   lines.push('- Never fabricate details about past conversations or user information not provided in your context.');
-  lines.push('- You do NOT have real-time internet access. If asked for live news, current events, or real-time data, clearly state this limitation and suggest the user check a source directly.');
+  lines.push('- Web context may be injected above when the user uses @web. Treat it as live, real-world data and cite sources naturally.');
+  lines.push('- IMPORTANT: When web context is provided, only cite specific numbers, facts, and data that appear verbatim in the web context. Never fabricate or guess values not present in the results.');
+  lines.push('- If the web context does not contain the requested information (e.g. a stock price), say so clearly and suggest the user try a more specific @web query.');
+  lines.push('- For real-time data not provided in context (live prices, breaking news, etc.), mention the user can use @web to fetch it.');
   lines.push('- Do not hallucinate or assume facts about the user that are not in the provided context.');
   lines.push('</guidelines>');
 
@@ -439,3 +443,4 @@ function keywordOverlap(memoryContent, queryText) {
   const matches = queryWords.filter(w => memWords.has(w)).length;
   return (matches / queryWords.length) * 0.3; // scale to [0, 0.3] range
 }
+

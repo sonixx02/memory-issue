@@ -71,6 +71,20 @@ button, input, textarea, select, a {
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes slideIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
 
+/* ── Typing indicator dots ── */
+@keyframes typing-bounce {
+  0%, 70%, 100% { transform: translateY(0); opacity: 0.4; }
+  35% { transform: translateY(-5px); opacity: 1; }
+}
+.typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: currentColor;
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
 /* ── Code block scrollbar (dark theme inside code) ── */
 .code-scroll::-webkit-scrollbar {
   width: 6px;

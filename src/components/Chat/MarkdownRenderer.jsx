@@ -4,8 +4,139 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Brain, ChevronDown, ChevronRight } from 'lucide-react';
 import { tv } from '../../theme/ThemeContext.jsx';
+
+// ── Animated typing indicator (replaces '...' placeholder) ──
+export function TypingDots() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', height: '22px' }}>
+      {[0, 1, 2].map(i => (
+        <span
+          key={i}
+          className="typing-dot"
+          style={{ animationDelay: `${i * 0.18}s` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Collapsible reasoning/thinking block ──
+function ThinkingBlock({ content, isPartial }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div style={{
+      margin: '0 0 12px',
+      borderRadius: '10px',
+      border: `1px solid ${tv('--border')}`,
+      overflow: 'hidden',
+      backgroundColor: tv('--bg-secondary'),
+    }}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: '7px',
+          padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer',
+          color: tv('--text-secondary'), fontSize: '12px', fontWeight: '500',
+          textAlign: 'left',
+        }}
+      >
+        <Brain size={13} style={{ flexShrink: 0, color: tv('--accent') }} />
+        <span style={{ flex: 1 }}>
+          {isPartial ? 'Thinking…' : 'Reasoning'}
+        </span>
+        {isPartial ? (
+          <TypingDots />
+        ) : (
+          open ? <ChevronDown size={13} /> : <ChevronRight size={13} />
+        )}
+      </button>
+      {(open || isPartial) && (
+        <div style={{
+          padding: '0 12px 12px',
+          fontSize: '12.5px',
+          lineHeight: 1.7,
+          color: tv('--text-muted'),
+          whiteSpace: 'pre-wrap',
+          borderTop: `1px solid ${tv('--border')}40`,
+          maxHeight: '400px',
+          overflowY: 'auto',
+        }} className="code-scroll">
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Extract thinking/reasoning blocks from content.
+ * Catches:
+ *  1. XML tags: <think>...</think> or <thinking>...</thinking>
+ *  2. Inline text: (thinking) ...\n\n  or  (thought process) ...\n\n
+ *
+ * Returns { blocks: string[], mainContent: string, isPartial: boolean }
+ */
+function parseThinkingBlocks(content) {
+  const blocks = [];
+
+  // 1) Extract complete XML <think> / <thinking> blocks
+  const xmlRe = /<(?:think|thinking)>([\s\S]*?)<\/(?:think|thinking)>/gi;
+  let mainContent = content.replace(xmlRe, (_, inner) => {
+    blocks.push(inner.trim());
+    return '';
+  }).trim();
+
+  // 2) Handle unclosed XML block (still streaming)
+  const openXmlRe = /<(?:think|thinking)>([\s\S]*)$/i;
+  const openMatch = openXmlRe.exec(mainContent);
+  if (openMatch) {
+    blocks.push(openMatch[1]);
+    mainContent = mainContent.replace(openXmlRe, '').trim();
+    return { blocks, mainContent, isPartial: true };
+  }
+
+  // 3) Catch literal text patterns: (thinking) ..., (thought process) ..., (reasoning) ...
+  //    These appear at the START of a response. Split by paragraphs and detect where
+  //    the real response begins (paragraph that doesn't read like internal reasoning).
+  if (blocks.length === 0) {
+    const parenRe = /^\((?:thinking|thought(?:\s+process)?|reasoning|chain\s+of\s+thought)\)\s*/i;
+    const parenMatch = mainContent.match(parenRe);
+    if (parenMatch) {
+      const afterPrefix = mainContent.slice(parenMatch[0].length);
+      const parts = afterPrefix.split(/\n\n/);
+      let splitIdx = -1;
+
+      for (let i = 1; i < parts.length; i++) {
+        const p = parts[i].trimStart();
+        // Internal-reasoning paragraphs typically start with these patterns
+        const looksLikeReasoning = /^(I |The user|My |This means|That |There |Note:|Since |Given |However|Looking|Also |Now |We |From |Could |Should |Would |Need |Want |Let me)/i.test(p);
+        if (!looksLikeReasoning && p.length > 0) {
+          splitIdx = i;
+          break;
+        }
+      }
+
+      if (splitIdx > 0) {
+        blocks.push(parts.slice(0, splitIdx).join('\n\n').trim());
+        mainContent = parts.slice(splitIdx).join('\n\n').trim();
+      } else if (parts.length > 1) {
+        // No clear split — first paragraph is thinking, rest is response
+        blocks.push(parts[0].trim());
+        mainContent = parts.slice(1).join('\n\n').trim();
+      }
+
+      // Still streaming: whole content is reasoning, no response yet
+      if (blocks.length > 0 && !mainContent) {
+        return { blocks, mainContent, isPartial: true };
+      }
+    }
+  }
+
+  return { blocks, mainContent, isPartial: false };
+}
 
 // ── Custom dark theme based on oneDark with tweaks ──
 const codeTheme = {
@@ -340,19 +471,33 @@ const markdownComponents = {
 /**
  * Renders markdown content with syntax-highlighted code blocks,
  * proper tables, blockquotes, and polished typography.
+ *
+ * Special cases:
+ * - content === '...' → animated typing dots (waiting for first token)
+ * - content contains <think> blocks → collapsible reasoning section
  */
 export default function MarkdownRenderer({ content }) {
   if (!content) return null;
 
+  // Waiting for first token — show animated dots
+  if (content === '...') return <TypingDots />;
+
+  const { blocks, mainContent, isPartial } = parseThinkingBlocks(content);
+
   return (
     <div className="markdown-body">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeRaw]}
-        components={markdownComponents}
-      >
-        {content}
-      </ReactMarkdown>
+      {blocks.map((block, i) => (
+        <ThinkingBlock key={i} content={block} isPartial={isPartial && i === blocks.length - 1} />
+      ))}
+      {mainContent && (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeRaw]}
+          components={markdownComponents}
+        >
+          {mainContent}
+        </ReactMarkdown>
+      )}
     </div>
   );
 }

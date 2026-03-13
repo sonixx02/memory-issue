@@ -3,7 +3,7 @@ import { initDb } from '../db/database.js';
 
 const AuthContext = createContext(null);
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_ID; // Set in Settings or env
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_ID; 
 
 /**
  * AuthProvider — manages Google Sign-In state.

@@ -6,9 +6,10 @@ import {
   CheckCircle2, Bookmark, ChevronDown, Sparkles, MessageSquare,
   Paperclip, X, FileText, Image, Film, File, Search,
   Pencil, Check, Copy, Trash2, RefreshCw, Globe,
+  ChevronRight, Brain, Clock, Hash,
 } from 'lucide-react';
 import MarkdownRenderer from './MarkdownRenderer.jsx';
-import { fetchFreeOpenRouterModels, clearModelCache } from '../../ai/openRouterModels.js';
+import { PROVIDER_META, fetchModelsForProvider, clearModelsCache } from '../../ai/modelRegistry.js';
 import { getMessagesByChat, addMessage, updateMessageContent, deleteMessage } from '../../db/messageHelpers.js';
 import { compileContext } from '../../ai/contextCompiler.js';
 import { streamChat } from '../../ai/llmService.js';
@@ -20,81 +21,15 @@ import { loadEmbeddingModel, getEmbeddingStatus, onEmbeddingStatusChange } from 
 import { autoTitleChat } from '../../ai/autoTitle.js';
 import { getCachedResponse, setCachedResponse, invalidateCache } from '../../ai/responseCache.js';
 import { needsSummary, generateRollingSummary } from '../../ai/summaryService.js';
-import { getAISettings, saveAISettings } from '../../db/settingsHelpers.js';
+import { getAISettings, saveAISettings, getJinaApiKey } from '../../db/settingsHelpers.js';
 import { tv } from '../../theme/ThemeContext.jsx';
 import {
   processFiles, addAttachment, getAttachmentsByMessage,
   classifyFile, formatFileSize,
 } from '../../db/attachmentHelpers.js';
 import { extractPdfText } from '../../ai/pdfService.js';
+import { resolveWebMentions, extractWebMentions, stripWebMentions } from '../../ai/webSearchService.js';
 
-// Static providers (non-OpenRouter stay hardcoded; OpenRouter paid models too)
-const STATIC_PROVIDERS = [
-  {
-    id: 'openrouter', label: 'OpenRouter', defaultModel: 'meta-llama/llama-4-maverick:free',
-    models: [], // free models are fetched dynamically
-    paidModels: [
-      { id: 'meta-llama/llama-4-maverick', name: 'Llama 4 Maverick (Paid)', free: false },
-      { id: 'meta-llama/llama-4-scout', name: 'Llama 4 Scout (Paid)', free: false },
-      { id: 'deepseek/deepseek-r1-0528', name: 'DeepSeek R1 (Paid)', free: false },
-      { id: 'deepseek/deepseek-v3-0324', name: 'DeepSeek V3 (Paid)', free: false },
-      { id: 'moonshotai/kimi-k2', name: 'Kimi K2', free: false },
-      { id: 'qwen/qwen3-235b-a22b', name: 'Qwen 3 235B (Paid)', free: false },
-      { id: 'mistralai/mistral-large-2411', name: 'Mistral Large', free: false },
-      { id: 'mistralai/mixtral-8x22b-instruct', name: 'Mixtral 8x22B', free: false },
-    ],
-  },
-  {
-    id: 'openai', label: 'OpenAI', defaultModel: 'gpt-4o-mini',
-    models: [
-      { id: 'gpt-4o', name: 'GPT-4o' },
-      { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-      { id: 'gpt-4.1', name: 'GPT-4.1' },
-      { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini' },
-      { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano' },
-      { id: 'o3-mini', name: 'O3 Mini' },
-    ],
-  },
-  {
-    id: 'anthropic', label: 'Anthropic', defaultModel: 'claude-sonnet-4-20250514',
-    models: [
-      { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
-      { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku' },
-      { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
-    ],
-  },
-  {
-    id: 'gemini', label: 'Gemini', defaultModel: 'gemini-2.0-flash',
-    models: [
-      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
-      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-      { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Lite' },
-      { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
-      { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
-    ],
-  },
-  {
-    id: 'groq', label: 'Groq', defaultModel: 'llama-3.3-70b-versatile',
-    models: [
-      { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile' },
-      { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant' },
-      { id: 'llama3-70b-8192', name: 'Llama 3 70B' },
-      { id: 'llama3-8b-8192', name: 'Llama 3 8B' },
-      { id: 'meta-llama/llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B' },
-      { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', name: 'Llama 4 Maverick 17B' },
-      { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B' },
-      { id: 'gemma2-9b-it', name: 'Gemma 2 9B' },
-      { id: 'qwen/qwen3-32b', name: 'Qwen 3 32B' },
-      { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill 70B' },
-      { id: 'mistral-saba-24b', name: 'Mistral Saba 24B' },
-      { id: 'compound-beta', name: 'Compound Beta (Agentic)' },
-      { id: 'compound-beta-mini', name: 'Compound Beta Mini' },
-      { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B' },
-      { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B' },
-    ],
-  },
-];
 
 export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSettings, isMobile, tempMode, tempMessages, onTempMessagesChange }) {
   const [input, setInput] = useState('');
@@ -113,8 +48,31 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
   const [streamingText, setStreamingText] = useState('');
   const [pendingFiles, setPendingFiles] = useState([]); // files queued to send
 
+  // Per-message context metadata for pipeline transparency
+  const [contextMetaMap, setContextMetaMap] = useState({});
+
+  // Per-message highlighted text selections for snapshot prioritization
+  const [highlightsMap, setHighlightsMap] = useState({});
+
+  const addHighlight = useCallback((msgId, text) => {
+    setHighlightsMap(prev => {
+      const existing = prev[msgId] || [];
+      if (existing.includes(text)) return prev;
+      return { ...prev, [msgId]: [...existing, text] };
+    });
+  }, []);
+
+  const removeHighlight = useCallback((msgId, index) => {
+    setHighlightsMap(prev => {
+      const existing = prev[msgId] || [];
+      return { ...prev, [msgId]: existing.filter((_, i) => i !== index) };
+    });
+  }, []);
+
   // Snapshot nudge toast (smart detection of decisions in AI responses)
   const [snapshotNudge, setSnapshotNudge] = useState(false);
+  // Web search status shown while resolving @web mentions
+  const [webStatus, setWebStatus] = useState(null); // null | { label: string }
 
   // Correction capture: auto-suggest memory item when user edits + resends
   const [correctionSuggestion, setCorrectionSuggestion] = useState(null);
@@ -134,38 +92,44 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
   const modelBtnRef = useRef(null);
   const pickerDropdownRef = useRef(null);
 
-  // Dynamic OpenRouter free models
-  const [orFreeModels, setOrFreeModels] = useState([]);
-  const [orModelsLoading, setOrModelsLoading] = useState(true);
+  // Dynamic model registry: per-provider model lists
+  const [dynamicProviders, setDynamicProviders] = useState(
+    PROVIDER_META.map(p => ({ ...p, models: [], loading: false, error: '' }))
+  );
 
-  useEffect(() => {
-    let cancelled = false;
-    setOrModelsLoading(true);
-    fetchFreeOpenRouterModels().then(models => {
-      if (!cancelled) {
-        setOrFreeModels(models);
-        setOrModelsLoading(false);
-      }
-    });
-    return () => { cancelled = true; };
+  const loadProviderModels = useCallback(async (providerId) => {
+    setDynamicProviders(prev => prev.map(p =>
+      p.id === providerId ? { ...p, loading: true, error: '' } : p
+    ));
+    const settings = await getAISettings();
+    const key = settings.providerKeys?.[providerId] || (settings.provider === providerId ? settings.apiKey : '');
+    const { models, error } = await fetchModelsForProvider(providerId, key);
+    setDynamicProviders(prev => prev.map(p =>
+      p.id === providerId ? { ...p, models, loading: false, error: error || '' } : p
+    ));
   }, []);
 
   const handleRefreshModels = useCallback(() => {
-    setOrModelsLoading(true);
-    clearModelCache();
-    fetchFreeOpenRouterModels().then(models => {
-      setOrFreeModels(models);
-      setOrModelsLoading(false);
-    });
-  }, []);
+    clearModelsCache(pickerTab);
+    loadProviderModels(pickerTab);
+  }, [pickerTab, loadProviderModels]);
 
-  // Build dynamic providers list: merge fetched free models into OpenRouter
-  const providers = useMemo(() => {
-    return STATIC_PROVIDERS.map(p => {
-      if (p.id !== 'openrouter') return p;
-      return { ...p, models: [...orFreeModels, ...p.paidModels] };
+  // Load models for current provider on mount
+  useEffect(() => {
+    getAISettings().then(s => {
+      loadProviderModels(s.provider || 'openrouter');
     });
-  }, [orFreeModels]);
+  }, [loadProviderModels]);
+
+  // Load models when picker tab changes
+  useEffect(() => {
+    const prov = dynamicProviders.find(p => p.id === pickerTab);
+    if (prov && prov.models.length === 0 && !prov.loading && !prov.error) {
+      loadProviderModels(pickerTab);
+    }
+  }, [pickerTab, dynamicProviders, loadProviderModels]);
+
+  const providers = dynamicProviders;
 
   // Resolve a model ID → display name using the (possibly dynamic) providers list
   const shortModelName = useCallback((modelId) => {
@@ -301,6 +265,14 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
         : `Attached files:\n${fileBlock}`;
     }
 
+    // ── @web mention handling ──
+    // Keep original with @web markers for resolution; strip them from DB-stored text
+    const webSourceText = fullUserText;
+    const webMentions = extractWebMentions(fullUserText);
+    if (webMentions.length > 0) {
+      fullUserText = stripWebMentions(fullUserText) || fullUserText;
+    }
+
     // ── Temp mode: messages stay in React state, never touch DB ──
     if (tempMode) {
       const tempUserId = 'tmp-' + Date.now();
@@ -321,6 +293,25 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
         abortRef.current = controller;
         let latestText = '';
         streamingRef.current = { id: tempAsstId, text: '' };
+
+        // Inject web results if @web was used
+        if (webMentions.length > 0) {
+          setWebStatus({ label: 'Searching web…' });
+          try {
+            const jinaKey = await getJinaApiKey();
+            const { contextBlock } = await resolveWebMentions(webSourceText, jinaKey);
+            if (contextBlock) {
+              const lastUserIdx = fullCompiled.findLastIndex(m => m.role === 'user');
+              if (lastUserIdx >= 0) {
+                fullCompiled[lastUserIdx] = {
+                  ...fullCompiled[lastUserIdx],
+                  content: `[Web Context]\n${contextBlock}\n[End Web Context]\n\n${fullCompiled[lastUserIdx].content}`,
+                };
+              }
+            }
+          } catch { /* unexpected failure, proceed without web context */ }
+          setWebStatus(null);
+        }
 
         await streamChat(fullCompiled, (accumulated) => {
           latestText = accumulated;
@@ -405,6 +396,29 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
       if (contextMeta) {
         console.log(`Context: ${contextMeta.pinnedCount} pinned, ${contextMeta.ragResultCount} RAG, ~${contextMeta.tokenEstimate} tokens`);
       }
+      // Store context metadata + system prompt for pipeline transparency
+      const compiledSystemPrompt = compiled[0]?.content || '';
+      const contextStartTime = performance.now();
+
+      // Inject web results if @web was used
+      if (webMentions.length > 0) {
+        const hasSearch = webMentions.some(m => m.type === 'search');
+        setWebStatus({ label: hasSearch ? 'Searching web…' : 'Fetching page…' });
+        try {
+          const jinaKey = await getJinaApiKey();
+          const { contextBlock } = await resolveWebMentions(webSourceText, jinaKey);
+          if (contextBlock) {
+            const lastUserIdx = compiled.findLastIndex(m => m.role === 'user');
+            if (lastUserIdx >= 0) {
+              compiled[lastUserIdx] = {
+                ...compiled[lastUserIdx],
+                content: `[Web Context]\n${contextBlock}\n[End Web Context]\n\n${compiled[lastUserIdx].content}`,
+              };
+            }
+          }
+        } catch { /* unexpected failure, proceed without web context */ }
+        setWebStatus(null);
+      }
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -429,6 +443,16 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
       setStreamingText('');
       if (latestText) {
         await updateMessageContent(assistantMsg.id, latestText);
+        // Store pipeline transparency metadata for this response
+        const responseTime = Math.round(performance.now() - contextStartTime);
+        setContextMetaMap(prev => ({ ...prev, [assistantMsg.id]: {
+          ...contextMeta,
+          systemPrompt: compiledSystemPrompt,
+          systemPromptLength: compiledSystemPrompt.length,
+          responseTime,
+          responseLength: latestText.length,
+          historyCount: compiled.length - 1,
+        }}));
         if (currentWorkspaceId) {
           await setCachedResponse(currentWorkspaceId, fullUserText, latestText);
         }
@@ -617,7 +641,9 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
   const handleSnapshot = useCallback(async () => {
     if (!currentWorkspaceId || !currentChatId || snapshotStatus === 'loading') return;
     setSnapshotStatus('loading');
-    const result = await previewSnapshot(currentWorkspaceId, currentChatId);
+    // Collect all highlighted texts across messages for snapshot prioritization
+    const allHighlights = Object.values(highlightsMap).flat().filter(Boolean);
+    const result = await previewSnapshot(currentWorkspaceId, currentChatId, { highlightedTexts: allHighlights });
     if (result.success) {
       setSnapshotStatus(null);
       setSnapshotPreview(result);
@@ -829,7 +855,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
         ) : (
           <div style={{ maxWidth: '800px', margin: '0 auto', padding: isMobile ? '0 12px' : '0 24px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
             {messages?.map((msg, idx) => (
-              <MessageBubble key={msg.id} message={msg} messages={messages} msgIndex={idx} workspaceId={currentWorkspaceId} chatId={currentChatId} onEditResend={handleEditResend} />
+              <MessageBubble key={msg.id} message={msg} messages={messages} msgIndex={idx} workspaceId={currentWorkspaceId} chatId={currentChatId} onEditResend={handleEditResend} contextMeta={contextMetaMap[msg.id]} highlights={highlightsMap[msg.id] || []} onAddHighlight={addHighlight} onRemoveHighlight={removeHighlight} />
             ))}
             <div ref={messagesEndRef} />
           </div>
@@ -1057,7 +1083,7 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={isStreaming ? "AI is responding…" : "Ask anything…"}
+              placeholder={isStreaming ? "AI is responding…" : "Ask anything… use @web to search the web"}
               disabled={isStreaming}
               style={{
                 width: '100%', background: 'none', border: 'none', outline: 'none',
@@ -1156,15 +1182,19 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
 
                     {/* Model list */}
                     <div style={{ flex: 1, overflowY: 'auto', padding: '6px', maxHeight: '300px' }}>
-                      {pickerTab === 'openrouter' && orModelsLoading && (
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '12px', fontSize: '12px', color: tv('--text-muted') }}>
-                          <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
-                          Loading models…
-                        </div>
-                      )}
-                      {filteredPickerModels.length === 0 && !(pickerTab === 'openrouter' && orModelsLoading) && (
+                      {(() => {
+                        const activeProv = dynamicProviders.find(p => p.id === pickerTab);
+                        if (activeProv?.loading) return (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '12px', fontSize: '12px', color: tv('--text-muted') }}>
+                            <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
+                            Loading models…
+                          </div>
+                        );
+                        return null;
+                      })()}
+                      {filteredPickerModels.length === 0 && !(dynamicProviders.find(p => p.id === pickerTab)?.loading) && (
                         <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: tv('--text-muted') }}>
-                          No models found
+                          {dynamicProviders.find(p => p.id === pickerTab)?.error || 'No models found'}
                         </div>
                       )}
                       {filteredPickerModels.map(m => (
@@ -1178,29 +1208,34 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
                     </div>
 
                     {/* Footer hint */}
-                    {pickerTab === 'openrouter' && (
-                      <div style={{
-                        padding: '6px 12px', borderTop: `1px solid ${tv('--border')}`,
-                        fontSize: '10px', color: tv('--text-muted'),
-                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      }}>
-                        <span>
-                          {orFreeModels.length} free model{orFreeModels.length !== 1 ? 's' : ''} · No API key needed
-                        </span>
-                        <button
-                          onClick={handleRefreshModels}
-                          disabled={orModelsLoading}
-                          title="Refresh model list from OpenRouter"
-                          style={{
-                            background: 'none', border: 'none', cursor: orModelsLoading ? 'default' : 'pointer',
-                            color: tv('--text-muted'), padding: '2px', display: 'flex', alignItems: 'center',
-                            opacity: orModelsLoading ? 0.4 : 0.7, transition: 'opacity 0.15s',
-                          }}
-                        >
-                          <RefreshCw size={12} style={{ animation: orModelsLoading ? 'spin 1s linear infinite' : 'none' }} />
-                        </button>
-                      </div>
-                    )}
+                    {(() => {
+                      const activeProv = dynamicProviders.find(p => p.id === pickerTab);
+                      const modelCount = activeProv?.models?.length || 0;
+                      const isLoading = activeProv?.loading;
+                      return (
+                        <div style={{
+                          padding: '6px 12px', borderTop: `1px solid ${tv('--border')}`,
+                          fontSize: '10px', color: tv('--text-muted'),
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        }}>
+                          <span>
+                            {modelCount} model{modelCount !== 1 ? 's' : ''}{pickerTab === 'openrouter' ? ' · No API key needed' : ''}
+                          </span>
+                          <button
+                            onClick={handleRefreshModels}
+                            disabled={isLoading}
+                            title="Refresh model list"
+                            style={{
+                              background: 'none', border: 'none', cursor: isLoading ? 'default' : 'pointer',
+                              color: tv('--text-muted'), padding: '2px', display: 'flex', alignItems: 'center',
+                              opacity: isLoading ? 0.4 : 0.7, transition: 'opacity 0.15s',
+                            }}
+                          >
+                            <RefreshCw size={12} style={{ animation: isLoading ? 'spin 1s linear infinite' : 'none' }} />
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </div>,
                   document.body
                 )}
@@ -1215,7 +1250,13 @@ export default function ChatArea({ currentChatId, currentWorkspaceId, onOpenSett
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {isStreaming && (
+                {webStatus && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Globe size={12} color={tv('--accent')} style={{ animation: 'spin 1s linear infinite' }} />
+                    <span style={{ fontSize: '11px', color: tv('--accent') }}>{webStatus.label}</span>
+                  </div>
+                )}
+                {isStreaming && !webStatus && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <Loader2 size={12} color={tv('--accent')} style={{ animation: 'spin 1s linear infinite' }} />
                     <span style={{ fontSize: '11px', color: tv('--accent') }}>streaming…</span>
@@ -1489,7 +1530,7 @@ function AttachmentGrid({ attachments }) {
   );
 }
 
-function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEditResend }) {
+function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEditResend, contextMeta, highlights, onAddHighlight, onRemoveHighlight }) {
   const isUser = message.role === 'user';
   const [hovered, setHovered] = useState(false);
   const [teachMode, setTeachMode] = useState(false);
@@ -1617,8 +1658,8 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
       style={{ padding: '16px 0', borderBottom: `1px solid ${tv('--border')}08`, animation: 'fadeIn 0.2s ease', position: 'relative' }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     >
-      {/* Floating selection popup for remembering specific text */}
-      {selectionPopup && workspaceId && createPortal(
+      {/* Floating selection popup for remembering/highlighting specific text */}
+      {selectionPopup && !isUser && createPortal(
         <div
           style={{
             position: 'fixed',
@@ -1627,29 +1668,54 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
             transform: 'translate(-50%, -100%)',
             zIndex: 9999,
             animation: 'fadeIn 0.15s ease',
+            display: 'flex', gap: '4px',
           }}
         >
-          <button
-            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleRemember(selectionPopup.text); }}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '5px',
-              fontSize: '11px', fontWeight: '600', cursor: 'pointer',
-              color: '#fff', backgroundColor: tv('--purple'),
-              border: 'none', borderRadius: '8px',
-              padding: '6px 12px',
-              boxShadow: `0 4px 16px rgba(0,0,0,0.3)`,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <Bookmark size={11} /> Remember selection
-          </button>
-          <div style={{
-            width: 0, height: 0,
-            borderLeft: '6px solid transparent',
-            borderRight: '6px solid transparent',
-            borderTop: `6px solid ${tv('--purple')}`,
-            margin: '0 auto',
-          }} />
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '3px' }}>
+              {workspaceId && (
+                <button
+                  onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleRemember(selectionPopup.text); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '5px',
+                    fontSize: '11px', fontWeight: '600', cursor: 'pointer',
+                    color: '#fff', backgroundColor: tv('--purple'),
+                    border: 'none', borderRadius: '8px 0 0 8px',
+                    padding: '6px 10px',
+                    boxShadow: `0 4px 16px rgba(0,0,0,0.3)`,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <Bookmark size={11} /> Remember
+                </button>
+              )}
+              <button
+                onMouseDown={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  onAddHighlight(message.id, selectionPopup.text);
+                  setSelectionPopup(null);
+                  window.getSelection()?.removeAllRanges();
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                  fontSize: '11px', fontWeight: '600', cursor: 'pointer',
+                  color: '#fff', backgroundColor: tv('--accent'),
+                  border: 'none', borderRadius: workspaceId ? '0 8px 8px 0' : '8px',
+                  padding: '6px 10px',
+                  boxShadow: `0 4px 16px rgba(0,0,0,0.3)`,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <Zap size={11} /> Highlight
+              </button>
+            </div>
+            <div style={{
+              width: 0, height: 0,
+              borderLeft: '6px solid transparent',
+              borderRight: '6px solid transparent',
+              borderTop: `6px solid ${tv('--accent')}`,
+            }} />
+          </div>
         </div>,
         document.body
       )}
@@ -1712,6 +1778,39 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
           <MarkdownRenderer content={message.content} />
         )}
       </div>
+
+      {/* Highlighted text chips for assistant messages */}
+      {!isUser && highlights.length > 0 && (
+        <div style={{ paddingLeft: '32px', marginTop: '6px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+          <span style={{ fontSize: '10px', color: tv('--text-muted'), display: 'flex', alignItems: 'center', gap: '3px', marginRight: '2px' }}>
+            <Zap size={9} /> Highlights:
+          </span>
+          {highlights.map((text, i) => (
+            <span key={i} style={{
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              fontSize: '10.5px', color: tv('--accent'),
+              background: `${tv('--accent')}15`,
+              border: `1px solid ${tv('--accent')}30`,
+              borderRadius: '4px', padding: '2px 6px',
+              maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              "{text.length > 50 ? text.slice(0, 47) + '...' : text}"
+              <button
+                onClick={() => onRemoveHighlight(message.id, i)}
+                style={{
+                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                  color: tv('--text-muted'), display: 'flex', flexShrink: 0,
+                }}
+              >
+                <X size={9} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Pipeline transparency badge for assistant messages */}
+      {!isUser && contextMeta && <ContextBadge meta={contextMeta} />}
 
       {/* Action buttons on hover */}
       {hovered && !editing && !teachMode && (
@@ -1817,6 +1916,133 @@ function MessageBubble({ message, messages, msgIndex, workspaceId, chatId, onEdi
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ContextBadge({ meta }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  if (!meta) return null;
+
+  const memCount = meta.pinnedCount || 0;
+  const ragCount = meta.ragResultCount || 0;
+  const tokens = meta.tokenEstimate || 0;
+  const responseTime = meta.responseTime || 0;
+  const hasSummary = meta.hasRollingSummary;
+
+  const summaryParts = [];
+  if (memCount > 0) summaryParts.push(`${memCount} memor${memCount === 1 ? 'y' : 'ies'}`);
+  if (ragCount > 0) summaryParts.push(`${ragCount} RAG hit${ragCount !== 1 ? 's' : ''}`);
+  if (hasSummary) summaryParts.push('summary');
+  summaryParts.push(`~${tokens >= 1000 ? (tokens / 1000).toFixed(1) + 'k' : tokens} tokens`);
+  if (responseTime > 0) summaryParts.push(`${responseTime}ms`);
+
+  const handleCopyPrompt = () => {
+    if (meta.systemPrompt) {
+      navigator.clipboard.writeText(meta.systemPrompt).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      });
+    }
+  };
+
+  return (
+    <div style={{ paddingLeft: '32px', marginTop: '4px' }}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: '5px',
+          fontSize: '11px', color: tv('--text-muted'), background: 'none',
+          border: 'none', padding: '2px 0', cursor: 'pointer', fontFamily: 'inherit',
+          opacity: 0.7, transition: 'opacity 0.15s',
+        }}
+        onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+        onMouseLeave={e => e.currentTarget.style.opacity = '0.7'}
+      >
+        <ChevronRight size={10} style={{
+          transform: expanded ? 'rotate(90deg)' : 'none',
+          transition: 'transform 0.15s',
+        }} />
+        <Brain size={10} />
+        {summaryParts.join(' · ')}
+      </button>
+
+      {expanded && (
+        <div style={{
+          marginTop: '6px', padding: '10px 12px',
+          background: tv('--bg-secondary'),
+          border: `1px solid ${tv('--border')}`,
+          borderRadius: '8px',
+          fontSize: '11.5px',
+          color: tv('--text-secondary'),
+        }}>
+          {/* Stats row */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '10px' }}>
+            <StatChip icon={<Database size={11} />} label="Memories" value={memCount} />
+            <StatChip icon={<Search size={11} />} label="RAG hits" value={ragCount} />
+            <StatChip icon={<Hash size={11} />} label="Sys tokens" value={`~${tokens}`} />
+            <StatChip icon={<MessageSquare size={11} />} label="History msgs" value={meta.historyCount || 0} />
+            <StatChip icon={<Clock size={11} />} label="Response" value={`${responseTime}ms`} />
+            {meta.responseLength && (
+              <StatChip icon={<FileText size={11} />} label="Output chars" value={meta.responseLength} />
+            )}
+          </div>
+
+          {/* System prompt section */}
+          {meta.systemPrompt && (
+            <div>
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                marginBottom: '6px',
+              }}>
+                <span style={{ fontWeight: 600, fontSize: '11px', color: tv('--text-primary') }}>
+                  System Prompt ({meta.systemPromptLength || meta.systemPrompt.length} chars)
+                </span>
+                <button
+                  onClick={handleCopyPrompt}
+                  style={{
+                    fontSize: '10px', color: copied ? tv('--success') : tv('--text-muted'),
+                    background: 'none', border: `1px solid ${tv('--border')}`,
+                    borderRadius: '4px', padding: '2px 6px', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: '3px', fontFamily: 'inherit',
+                  }}
+                >
+                  {copied ? <CheckCircle2 size={9} /> : <Copy size={9} />}
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <pre style={{
+                background: tv('--bg-primary'),
+                border: `1px solid ${tv('--border')}`,
+                borderRadius: '6px',
+                padding: '8px 10px',
+                fontSize: '10.5px',
+                lineHeight: '1.5',
+                maxHeight: '300px',
+                overflow: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                color: tv('--text-secondary'),
+                margin: 0,
+              }}>
+                {meta.systemPrompt}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatChip({ icon, label, value }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+      <span style={{ color: tv('--text-muted'), display: 'flex' }}>{icon}</span>
+      <span style={{ color: tv('--text-muted') }}>{label}:</span>
+      <span style={{ fontWeight: 600, color: tv('--text-primary') }}>{value}</span>
     </div>
   );
 }

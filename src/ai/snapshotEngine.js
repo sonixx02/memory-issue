@@ -12,7 +12,7 @@ import { debugLog } from './debugLogger.js';
  *
  * @returns {{ success, extractedItems?, existingItems?, skippedDupes?, error? }}
  */
-export async function previewSnapshot(workspaceId, chatId) {
+export async function previewSnapshot(workspaceId, chatId, { highlightedTexts } = {}) {
   try {
     const [workspace, messages, existingMemory] = await Promise.all([
       getWorkspace(workspaceId),
@@ -28,7 +28,7 @@ export async function previewSnapshot(workspaceId, chatId) {
       .map(m => `[${m.category}] ${m.content}`)
       .join('\n');
 
-    const extractionMessages = buildMemoryExtractionPrompt(messages, existingSummary);
+    const extractionMessages = buildMemoryExtractionPrompt(messages, existingSummary, highlightedTexts);
     const raw = await chatCompletion(extractionMessages);
     const parsed = parseMemoryItemsResponse(raw);
 
@@ -220,10 +220,14 @@ export async function commitSnapshot(workspaceId, chatId) {
 /**
  * Build the extraction prompt that produces Memory Items (not flat stateFile).
  */
-function buildMemoryExtractionPrompt(messages, existingMemorySummary) {
+function buildMemoryExtractionPrompt(messages, existingMemorySummary, highlightedTexts) {
   const conversation = messages
     .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
     .join('\n\n');
+
+  const highlightSection = highlightedTexts?.length
+    ? `\n\nIMPORTANT — The user has highlighted the following lines as particularly important. Prioritize extracting memory items from these highlights:\n${highlightedTexts.map((t, i) => `${i + 1}. "${t}"`).join('\n')}\n`
+    : '';
 
   return [
     {
@@ -242,7 +246,7 @@ Categories explained:
 - rejected: ideas explicitly rejected ("Don't use Redux for state management")
 - code_style: coding conventions discussed ("Use camelCase for variables, PascalCase for components")
 
-${existingMemorySummary ? `\nAlready stored in memory (DO NOT duplicate these):\n${existingMemorySummary}\n` : ''}
+${existingMemorySummary ? `\nAlready stored in memory (DO NOT duplicate these):\n${existingMemorySummary}\n` : ''}${highlightSection}
 Rules:
 - Return ONLY a JSON array, no markdown, no code fences, no explanation
 - Only extract genuinely NEW information not already in memory

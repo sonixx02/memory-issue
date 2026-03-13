@@ -1,86 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
-import { X, Key, Bot, Check, AlertCircle, Download, Upload, Globe, Trash2, Pin, Edit3, Palette } from 'lucide-react';
-import { getAISettings, saveAISettings, getGlobalProfile, saveGlobalProfile } from '../../db/settingsHelpers.js';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { X, Key, Bot, Check, AlertCircle, Download, Upload, Globe, Trash2, Pin, Edit3, Palette, RefreshCw, Loader } from 'lucide-react';
+import { getAISettings, saveAISettings, getGlobalProfile, saveGlobalProfile, getJinaApiKey, saveJinaApiKey } from '../../db/settingsHelpers.js';
 import { exportAllData, importData } from '../../db/exportImport.js';
 import db from '../../db/database.js';
 import { deleteMemoryItem, updateMemoryItem, demoteToWorkspace } from '../../db/memoryHelpers.js';
 import { useTheme, tv, THEMES } from '../../theme/ThemeContext.jsx';
-
-const PROVIDERS = [
-  {
-    id: 'openrouter', label: 'OpenRouter', placeholder: 'sk-or-v1-...', defaultModel: 'meta-llama/llama-4-maverick:free',
-    models: [
-      { id: 'meta-llama/llama-4-maverick:free', name: 'Llama 4 Maverick', free: true },
-      { id: 'meta-llama/llama-4-scout:free', name: 'Llama 4 Scout', free: true },
-      { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B', free: true },
-      { id: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1', free: true },
-      { id: 'deepseek/deepseek-chat-v3-0324:free', name: 'DeepSeek V3', free: true },
-      { id: 'qwen/qwen-2.5-72b-instruct:free', name: 'Qwen 2.5 72B', free: true },
-      { id: 'qwen/qwen-2.5-coder-32b-instruct:free', name: 'Qwen Coder 32B', free: true },
-      { id: 'google/gemma-3-27b-it:free', name: 'Gemma 3 27B', free: true },
-      { id: 'microsoft/phi-4:free', name: 'Phi-4', free: true },
-      { id: 'mistralai/mistral-small-3.1-24b-instruct:free', name: 'Mistral Small 3.1', free: true },
-      { id: 'nvidia/llama-3.1-nemotron-70b-instruct:free', name: 'Nemotron 70B', free: true },
-      { id: 'nousresearch/deephermes-3-llama-3-8b:free', name: 'DeepHermes 3 8B', free: true },
-      { id: 'meta-llama/llama-4-maverick', name: 'Llama 4 Maverick (Paid)', free: false },
-      { id: 'meta-llama/llama-4-scout', name: 'Llama 4 Scout (Paid)', free: false },
-      { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (Paid)', free: false },
-      { id: 'deepseek/deepseek-chat-v3-0324', name: 'DeepSeek V3 (Paid)', free: false },
-      { id: 'mistralai/mistral-large-2411', name: 'Mistral Large', free: false },
-      { id: 'mistralai/mixtral-8x22b-instruct', name: 'Mixtral 8x22B', free: false },
-      { id: 'qwen/qwen-2.5-72b-instruct', name: 'Qwen 2.5 72B (Paid)', free: false },
-    ],
-  },
-  {
-    id: 'openai', label: 'OpenAI', placeholder: 'sk-...', defaultModel: 'gpt-4o-mini',
-    models: [
-      { id: 'gpt-4o', name: 'GPT-4o' },
-      { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-      { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano' },
-      { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini' },
-      { id: 'o3-mini', name: 'O3 Mini' },
-    ],
-  },
-  {
-    id: 'anthropic', label: 'Anthropic', placeholder: 'sk-ant-...', defaultModel: 'claude-sonnet-4-20250514',
-    models: [
-      { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
-      { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku' },
-      { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
-    ],
-  },
-  {
-    id: 'gemini', label: 'Gemini', placeholder: 'AIza...', defaultModel: 'gemini-2.0-flash',
-    models: [
-      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
-      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-      { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Lite' },
-      { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
-      { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
-    ],
-  },
-  {
-    id: 'groq', label: 'Groq', placeholder: 'gsk_...', defaultModel: 'llama-3.3-70b-versatile',
-    models: [
-      { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile' },
-      { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant' },
-      { id: 'llama3-70b-8192', name: 'Llama 3 70B' },
-      { id: 'llama3-8b-8192', name: 'Llama 3 8B' },
-      { id: 'meta-llama/llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B' },
-      { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', name: 'Llama 4 Maverick 17B' },
-      { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B' },
-      { id: 'gemma2-9b-it', name: 'Gemma 2 9B' },
-      { id: 'qwen/qwen3-32b', name: 'Qwen 3 32B' },
-      { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill 70B' },
-      { id: 'mistral-saba-24b', name: 'Mistral Saba 24B' },
-      { id: 'compound-beta', name: 'Compound Beta (Agentic)' },
-      { id: 'compound-beta-mini', name: 'Compound Beta Mini' },
-      { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B' },
-      { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B' },
-    ],
-  },
-];
+import { PROVIDER_META, fetchModelsForProvider, clearModelsCache } from '../../ai/modelRegistry.js';
 
 export default function SettingsModal({ open, onClose }) {
   const [activeTab, setActiveTab] = useState('models');
@@ -89,48 +14,93 @@ export default function SettingsModal({ open, onClose }) {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
   const [providerKeys, setProviderKeys] = useState({});
+  // Dynamic model list
+  const [dynamicModels, setDynamicModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState('');
   // Profile Settings
   const [profileRole, setProfileRole] = useState('');
   const [profileTone, setProfileTone] = useState('');
   const [profilePrefs, setProfilePrefs] = useState('');
+  // Web Search
+  const [jinaApiKey, setJinaApiKey] = useState('');
 
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [globalItems, setGlobalItems] = useState([]);
   const fileInputRef = useRef(null);
+  const debounceRef = useRef(null);
 
   const loadGlobalItems = async () => {
     const items = await db.memoryItems.where('scope').equals('global').toArray();
     setGlobalItems(items.sort((a, b) => b.createdAt - a.createdAt));
   };
 
+  // ── Fetch models dynamically ──
+  const loadModels = useCallback(async (providerId, key) => {
+    setModelsLoading(true);
+    setModelsError('');
+    const { models, error } = await fetchModelsForProvider(providerId, key);
+    setDynamicModels(models);
+    if (error) setModelsError(error);
+    // If saved model is not in the new list, auto-select the first one
+    if (models.length > 0) {
+      setModel(prev => {
+        if (!prev || !models.find(m => m.id === prev)) return models[0].id;
+        return prev;
+      });
+    }
+    setModelsLoading(false);
+  }, []);
+
+  const handleRefreshModels = useCallback(() => {
+    clearModelsCache(provider);
+    loadModels(provider, apiKey);
+  }, [provider, apiKey, loadModels]);
+
   useEffect(() => {
     if (!open) return;
     setLoading(true);
     setSaved(false);
-    Promise.all([getAISettings(), getGlobalProfile()]).then(([aiSet, profSet]) => {
-      setProvider(aiSet.provider || 'openrouter');
-      setProviderKeys(aiSet.providerKeys || {});
-      setApiKey(aiSet.providerKeys?.[aiSet.provider] || aiSet.apiKey || '');
+    Promise.all([getAISettings(), getGlobalProfile(), getJinaApiKey()]).then(([aiSet, profSet, jinaKey]) => {
+      const prov = aiSet.provider || 'openrouter';
+      const keys = aiSet.providerKeys || {};
+      const key = keys[prov] || aiSet.apiKey || '';
+      setProvider(prov);
+      setProviderKeys(keys);
+      setApiKey(key);
       setModel(aiSet.model || '');
-      
+
       setProfileRole(profSet.role || '');
       setProfileTone(profSet.tone || '');
       setProfilePrefs(profSet.preferences?.join('\n') || '');
-      
+
+      setJinaApiKey(jinaKey || '');
+
       setLoading(false);
+      // Fetch models for the loaded provider
+      loadModels(prov, key);
     });
     loadGlobalItems();
-  }, [open]);
+  }, [open, loadModels]);
 
-  const currentProvider = PROVIDERS.find(p => p.id === provider) || PROVIDERS[0];
+  // Re-fetch models when provider or apiKey changes (debounced for key input)
+  useEffect(() => {
+    if (loading || !open) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      loadModels(provider, apiKey);
+    }, 500);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [provider, apiKey, loading, open, loadModels]);
+
+  const currentProviderMeta = PROVIDER_META.find(p => p.id === provider) || PROVIDER_META[0];
 
   const handleProviderChange = (id) => {
     // Save current key for active provider before switching
     if (apiKey) setProviderKeys(prev => ({ ...prev, [provider]: apiKey }));
     setProvider(id);
-    const p = PROVIDERS.find(x => x.id === id);
-    setModel(p?.defaultModel || '');
+    setModel(''); // will be auto-selected when models load
     // Load key for the new provider
     setApiKey(providerKeys[id] || '');
     setSaved(false);
@@ -144,13 +114,15 @@ export default function SettingsModal({ open, onClose }) {
 
   const handleSave = async () => {
     const prefsArray = profilePrefs.split('\n').map(p => p.trim()).filter(Boolean);
-    const keys = { ...providerKeys, [provider]: apiKey };
-    
+    const trimmedKey = apiKey.trim();
+    const keys = { ...providerKeys, [provider]: trimmedKey };
+
     await Promise.all([
-      saveAISettings({ provider, apiKey, model: model || currentProvider.defaultModel, providerKeys: keys }),
-      saveGlobalProfile({ role: profileRole, tone: profileTone, preferences: prefsArray })
+      saveAISettings({ provider, apiKey: trimmedKey, model: model || dynamicModels[0]?.id || '', providerKeys: keys }),
+      saveGlobalProfile({ role: profileRole, tone: profileTone, preferences: prefsArray }),
+      saveJinaApiKey(jinaApiKey.trim()),
     ]);
-    
+
     setSaved(true);
     setTimeout(() => onClose(), 600);
   };
@@ -221,7 +193,7 @@ export default function SettingsModal({ open, onClose }) {
           <div style={{ padding: '40px', textAlign: 'center', color: tv('--text-muted'), fontSize: '13px' }}>Loading…</div>
         ) : (
           <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', maxHeight: '60vh', overflowY: 'auto' }}>
-            
+
             {activeTab === 'theme' && (
               <ThemeTab />
             )}
@@ -230,7 +202,7 @@ export default function SettingsModal({ open, onClose }) {
               <>
                 <FieldGroup label="Provider">
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    {PROVIDERS.map(p => (
+                    {PROVIDER_META.map(p => (
                       <ToggleChip
                         key={p.id}
                         active={provider === p.id}
@@ -254,7 +226,7 @@ export default function SettingsModal({ open, onClose }) {
                       type="password"
                       value={apiKey}
                       onChange={e => handleApiKeyChange(e.target.value)}
-                      placeholder={currentProvider.placeholder}
+                      placeholder={currentProviderMeta.placeholder}
                       style={inputStyle}
                     />
                   </div>
@@ -269,19 +241,102 @@ export default function SettingsModal({ open, onClose }) {
                 </FieldGroup>
 
                 <FieldGroup label="Model">
-                  <select
-                    value={model || currentProvider.defaultModel}
-                    onChange={e => { setModel(e.target.value); setSaved(false); }}
-                    style={{ ...inputStyle, cursor: 'pointer', appearance: 'none' }}
-                  >
-                    {currentProvider.models.map(m => (
-                      <option key={m.id} value={m.id}>{m.name}{m.free ? ' ★ Free' : ''}</option>
-                    ))}
-                  </select>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <div style={{ flex: 1, position: 'relative' }}>
+                      {modelsLoading ? (
+                        <div style={{
+                          ...inputStyle,
+                          display: 'flex', alignItems: 'center', gap: '8px',
+                          color: tv('--text-muted'),
+                        }}>
+                          <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                          Loading models...
+                        </div>
+                      ) : dynamicModels.length > 0 ? (
+                        <select
+                          value={model}
+                          onChange={e => { setModel(e.target.value); setSaved(false); }}
+                          style={{ ...inputStyle, cursor: 'pointer', appearance: 'none' }}
+                        >
+                          {/* Group free models first for OpenRouter */}
+                          {provider === 'openrouter' && dynamicModels.some(m => m.free) && (
+                            <optgroup label="Free Models">
+                              {dynamicModels.filter(m => m.free).map(m => (
+                                <option key={m.id} value={m.id}>{m.name}</option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {provider === 'openrouter' && dynamicModels.some(m => !m.free) && (
+                            <optgroup label="Paid Models">
+                              {dynamicModels.filter(m => !m.free).map(m => (
+                                <option key={m.id} value={m.id}>{m.name}</option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {/* For non-OpenRouter providers, just list all */}
+                          {provider !== 'openrouter' && dynamicModels.map(m => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div style={{
+                          ...inputStyle,
+                          display: 'flex', alignItems: 'center', gap: '8px',
+                          color: tv('--text-muted'), fontSize: '12px',
+                        }}>
+                          {modelsError || 'No models available'}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleRefreshModels}
+                      disabled={modelsLoading}
+                      title="Refresh models"
+                      style={{
+                        padding: '8px', borderRadius: '8px', border: `1px solid ${tv('--border')}`,
+                        backgroundColor: tv('--bg-secondary'), color: tv('--text-secondary'),
+                        cursor: modelsLoading ? 'not-allowed' : 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        opacity: modelsLoading ? 0.5 : 1,
+                        transition: 'opacity 0.2s',
+                      }}
+                    >
+                      <RefreshCw size={14} style={modelsLoading ? { animation: 'spin 1s linear infinite' } : {}} />
+                    </button>
+                  </div>
+                  {dynamicModels.length > 0 && (
+                    <p style={{ margin: '4px 0 0', fontSize: '10px', color: tv('--text-muted') }}>
+                      {dynamicModels.length} model{dynamicModels.length !== 1 ? 's' : ''} available · cached for 1 hr
+                    </p>
+                  )}
                 </FieldGroup>
 
-                {!apiKey && provider !== 'openrouter' && (
-                  <div style={{
+                {/* ── Web Search ── */}
+                <div style={{ paddingTop: '4px', borderTop: `1px solid ${tv('--border')}` }}>
+                  <FieldGroup label="Web Search (optional)">
+                    <input
+                      type="password"
+                      value={jinaApiKey}
+                      onChange={e => { setJinaApiKey(e.target.value); setSaved(false); }}
+                      placeholder="Jina AI API key — jina.ai"
+                      style={inputStyle}
+                    />
+                    <p style={{ margin: '6px 0 0', fontSize: '11px', color: tv('--text-muted'), lineHeight: 1.5 }}>
+                      Powers <strong style={{ color: tv('--text-secondary') }}>@web</strong> search in chat.
+                      Get a <strong>free</strong> key at{' '}
+                      <a href="https://jina.ai" target="_blank" rel="noopener noreferrer"
+                        style={{ color: tv('--accent'), textDecoration: 'underline' }}>jina.ai</a>
+                      {' '}(1M tokens/month free). URL reading works without a key.
+                      {jinaApiKey && (
+                        <span style={{ display: 'block', marginTop: '4px', color: tv('--success') }}>
+                          ✓ Key saved — @web search is enabled.
+                        </span>
+                      )}
+                    </p>
+                  </FieldGroup>
+                </div>
+
+                {!apiKey && provider !== 'openrouter' && (                  <div style={{
                     display: 'flex', alignItems: 'center', gap: '8px',
                     padding: '10px 14px', borderRadius: '8px',
                     backgroundColor: tv('--warning-soft'), border: '1px solid #f59e0b30',
@@ -315,7 +370,7 @@ export default function SettingsModal({ open, onClose }) {
                 <div style={{ fontSize: '12px', color: tv('--text-secondary'), marginBottom: '-8px', lineHeight: 1.5 }}>
                   These instructions are injected into the context of <strong>every workspace</strong>. Use this for your global preferences.
                 </div>
-                
+
                 <FieldGroup label="Your Role">
                   <input
                     type="text"
@@ -355,7 +410,7 @@ export default function SettingsModal({ open, onClose }) {
                       <button onClick={() => fileInputRef.current?.click()} style={secBtnStyle}>
                         <Upload size={14} /> Import Data
                       </button>
-                      <input 
+                      <input
                         type="file" accept=".json"
                         ref={fileInputRef} style={{ display: 'none' }}
                         onChange={async (e) => {

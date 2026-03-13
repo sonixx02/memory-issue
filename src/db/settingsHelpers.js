@@ -63,3 +63,13 @@ export async function getGlobalProfile() {
 export async function saveGlobalProfile(profileData) {
   await setSetting('global_user_profile', profileData);
 }
+
+// ── Web Search Settings ──
+
+export async function getJinaApiKey() {
+  return (await getSetting('jina_api_key')) || '';
+}
+
+export async function saveJinaApiKey(key) {
+  await setSetting('jina_api_key', key);
+}
